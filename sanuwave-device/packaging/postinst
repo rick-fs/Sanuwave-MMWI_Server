@@ -1,0 +1,352 @@
+#!/bin/bash
+set -e
+
+BINARY_PATH="/usr/local/bin/sanuwave_imaging_server"
+
+# DW9714 DKMS module (existing)
+DW9714_NAME="dw9714"
+DW9714_VERSION="1.0"
+DW9714_SRC="/usr/src/${DW9714_NAME}-${DW9714_VERSION}"
+DW9714_PKG_SRC="/usr/local/share/sanuwave/dkms/dw9714"
+
+# rp1-cfe SANUWAVE patch DKMS module (new)
+CFE_NAME="rp1-cfe-sanuwave"
+CFE_VERSION="1.0"
+CFE_SRC="/usr/src/${CFE_NAME}-${CFE_VERSION}"
+CFE_PKG_SRC="/usr/local/share/sanuwave/dkms/rp1-cfe"
+CFE_MODPROBE_FILE="/etc/modprobe.d/rp1-cfe-sanuwave.conf"
+
+OVERLAY_NAME="imx219-b0190-vcm"
+OVERLAY_DIR="/boot/firmware/overlays"
+CONFIG="/boot/firmware/config.txt"
+BLACKLIST_FILE="/etc/modprobe.d/ad5398-blacklist.conf"
+TUNING_SRC="/usr/local/share/sanuwave/tuning/imx219_noir_af.json"
+
+KVER="$(uname -r)"
+
+# ─── Fail function — roll back everything and exit ──────────────────────────
+install_failed()
+{
+    echo ""
+    echo "  Rolling back postinst changes..."
+
+    # Only remove things THIS SCRIPT created — not files dpkg unpacked.
+    rm -f "${BLACKLIST_FILE}"
+    rm -f "${OVERLAY_DIR}/${OVERLAY_NAME}.dtbo"
+    rm -f "${CFE_MODPROBE_FILE}"
+
+    if command -v dkms > /dev/null 2>&1; then
+        dkms remove "${DW9714_NAME}/${DW9714_VERSION}" --all 2>/dev/null || true
+        dkms remove "${CFE_NAME}/${CFE_VERSION}"       --all 2>/dev/null || true
+    fi
+    rm -rf "${DW9714_SRC}"
+    rm -rf "${CFE_SRC}"
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║                                                                  ║"
+    echo "║   INSTALLATION FAILED                                            ║"
+    echo "║                                                                  ║"
+    echo "║   The server is NOT ready to use.                                ║"
+    echo "║                                                                  ║"
+    echo "║   Before installing, run:                                        ║"
+    echo "║                                                                  ║"
+    echo "║     sudo apt-get install -y dkms build-essential \\              ║"
+    echo "║         linux-headers-${KVER}                                    ║"
+    echo "║                                                                  ║"
+    echo "║   Then re-run configuration:                                     ║"
+    echo "║                                                                  ║"
+    echo "║     sudo dpkg-reconfigure sanuwave-imaging-server                ║"
+    echo "║                                                                  ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo ""
+    exit 1
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 1: Check prerequisites BEFORE doing anything
+# ═════════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  Checking kernel driver prerequisites"
+echo "──────────────────────────────────────────────────────"
+
+# DW9714 prerequisites (existing)
+if [ ! -f "${DW9714_PKG_SRC}/dw9714.c" ]; then
+    echo "  ✗ DW9714 driver source not found in package."
+    install_failed
+fi
+echo "  ✓ DW9714 driver source present"
+
+# rp1-cfe prerequisites (new)
+if [ ! -f "${CFE_PKG_SRC}/cfe.c" ] \
+   || [ ! -f "${CFE_PKG_SRC}/patches/rp1-cfe-sanuwave-strobe.patch" ]; then
+    echo "  ✗ rp1-cfe driver source or patch not found in package."
+    install_failed
+fi
+echo "  ✓ rp1-cfe driver source + patch present"
+
+if ! command -v dkms > /dev/null 2>&1; then
+    echo ""
+    echo "  ✗ DKMS is not installed."
+    echo ""
+    echo "  Install it with:"
+    echo "      sudo apt-get install -y dkms build-essential linux-headers-${KVER}"
+    echo ""
+    install_failed
+fi
+echo "  ✓ DKMS available"
+
+if [ ! -f "/lib/modules/${KVER}/build/Makefile" ]; then
+    echo ""
+    echo "  ✗ Kernel headers not found for ${KVER}."
+    echo ""
+    echo "  Install them with:"
+    echo "      sudo apt-get install -y linux-headers-${KVER}"
+    echo ""
+    echo "  If that version is no longer available, your running kernel may"
+    echo "  be newer than what's in the apt cache.  Either pin a matching"
+    echo "  kernel or contact the package maintainer for a rebuild."
+    echo ""
+    install_failed
+fi
+echo "  ✓ Kernel headers present for ${KVER}"
+
+# Dry-run the patch so we fail early if the running kernel's cfe.c has
+# drifted too far from the one our patch was generated against.  This is
+# the single most common failure mode for shipping kernel-module patches.
+if ! patch --dry-run -p1 -d "${CFE_PKG_SRC}" \
+        < "${CFE_PKG_SRC}/patches/rp1-cfe-sanuwave-strobe.patch" > /dev/null 2>&1; then
+    echo ""
+    echo "  ✗ SANUWAVE rp1-cfe patch does not apply to the shipped stock cfe.c."
+    echo "    This usually means the package is corrupt."
+    echo ""
+    install_failed
+fi
+echo "  ✓ SANUWAVE patch applies cleanly to stock cfe.c"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 2: Build the DW9714 VCM driver
+# ═════════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  Building DW9714 VCM kernel driver"
+echo "──────────────────────────────────────────────────────"
+
+if dkms status "${DW9714_NAME}/${DW9714_VERSION}" 2>/dev/null | grep -q "${DW9714_NAME}"; then
+    echo "  Removing previous DKMS registration..."
+    dkms remove "${DW9714_NAME}/${DW9714_VERSION}" --all 2>/dev/null || true
+fi
+
+mkdir -p "${DW9714_SRC}"
+cp "${DW9714_PKG_SRC}/dw9714.c" "${DW9714_SRC}/"
+cp "${DW9714_PKG_SRC}/Makefile" "${DW9714_SRC}/"
+cp "${DW9714_PKG_SRC}/dkms.conf" "${DW9714_SRC}/"
+
+if ! dkms add "${DW9714_NAME}/${DW9714_VERSION}" 2>/dev/null; then
+    echo "  ✗ DKMS add failed"
+    install_failed
+fi
+
+if ! dkms build "${DW9714_NAME}/${DW9714_VERSION}"; then
+    echo "  ✗ DKMS build failed"
+    install_failed
+fi
+
+if ! dkms install "${DW9714_NAME}/${DW9714_VERSION}"; then
+    echo "  ✗ DKMS install failed"
+    install_failed
+fi
+
+echo "  ✓ DW9714 kernel module built and installed via DKMS"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 3: Build the patched rp1-cfe driver
+# ═════════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  Building patched rp1-cfe kernel driver (SANUWAVE strobe)"
+echo "──────────────────────────────────────────────────────"
+
+if dkms status "${CFE_NAME}/${CFE_VERSION}" 2>/dev/null | grep -q "${CFE_NAME}"; then
+    echo "  Removing previous DKMS registration..."
+    dkms remove "${CFE_NAME}/${CFE_VERSION}" --all 2>/dev/null || true
+fi
+
+# Stage the DKMS source tree.  We ship *everything* — stock .c/.h files,
+# Makefile, dkms.conf, and the patch — so the build is self-contained and
+# doesn't depend on the kernel-headers package shipping any driver source.
+mkdir -p "${CFE_SRC}"
+cp -r "${CFE_PKG_SRC}"/* "${CFE_SRC}/"
+
+if ! dkms add "${CFE_NAME}/${CFE_VERSION}" 2>/dev/null; then
+    echo "  ✗ DKMS add failed for rp1-cfe"
+    install_failed
+fi
+
+if ! dkms build "${CFE_NAME}/${CFE_VERSION}"; then
+    echo "  ✗ DKMS build failed for rp1-cfe"
+    echo "    See /var/lib/dkms/${CFE_NAME}/${CFE_VERSION}/build/make.log"
+    install_failed
+fi
+
+# --force is required because we are overriding an in-tree kernel
+# module (rp1-cfe ships with the stock kernel).  Without --force DKMS
+# refuses to write our patched copy into /lib/modules/.../updates/dkms/
+# while the stock copy still exists under /kernel/drivers/...
+if ! dkms install --force "${CFE_NAME}/${CFE_VERSION}"; then
+    echo "  ✗ DKMS install failed for rp1-cfe"
+    install_failed
+fi
+
+# Belt-and-suspenders: tell modprobe to prefer the /updates/ copy of the
+# module, even if some future kernel upgrade changes depmod priority.
+cat > "${CFE_MODPROBE_FILE}" <<EOF
+# Sanuwave Medical Imaging Server — prefer patched rp1-cfe driver.
+# Installed by sanuwave-imaging-server package postinst.
+override rp1-cfe * updates
+EOF
+echo "  ✓ modprobe override written to ${CFE_MODPROBE_FILE}"
+
+# Refresh module dependency cache so the new module is picked up on next
+# boot.  We do NOT try to unload/reload rp1-cfe on a running system — it
+# almost certainly has live users (libcamera, camera services) and the
+# safe answer is a reboot.
+depmod -a "${KVER}"
+
+echo "  ✓ Patched rp1-cfe kernel module built and installed via DKMS"
+echo "  * A reboot is required for the patched module to take effect."
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 4: Configure the system
+# ═════════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  Configuring system"
+echo "──────────────────────────────────────────────────────"
+
+# Legacy cleanup
+OLD_BINARY="/usr/local/bin/sanuwave_prototype"
+if [ -f "$OLD_BINARY" ]; then
+    echo "  Removing legacy binary: $OLD_BINARY"
+    rm -f "$OLD_BINARY"
+fi
+
+# Ensure i2c group exists
+if ! getent group i2c > /dev/null; then
+    groupadd --system i2c
+fi
+
+# Reload udev rules
+udevadm control --reload-rules
+udevadm trigger
+
+# AD5398 blacklist
+if [ ! -f "${BLACKLIST_FILE}" ]; then
+    echo "blacklist ad5398_vcm" > "${BLACKLIST_FILE}"
+    echo "  ✓ Blacklisted ad5398_vcm driver"
+else
+    echo "  ✓ ad5398_vcm blacklist already in place"
+fi
+
+# Device tree overlay
+OVERLAY_PKG_SRC="/usr/local/share/sanuwave/overlays/${OVERLAY_NAME}.dtbo"
+if [ -f "${OVERLAY_PKG_SRC}" ]; then
+    cp "${OVERLAY_PKG_SRC}" "${OVERLAY_DIR}/"
+    echo "  ✓ Installed ${OVERLAY_NAME}.dtbo"
+else
+    echo "  ✗ Overlay file not found: ${OVERLAY_PKG_SRC}"
+fi
+
+# config.txt patching
+NEEDS_REBOOT=true   # The rp1-cfe swap alone requires a reboot.
+if [ -f "$CONFIG" ]; then
+    if grep -qE "^\s*dtoverlay=imx219.*vcm" "$CONFIG"; then
+        echo "  Removing old dtoverlay=imx219,...,vcm line"
+        sed -i '/^\s*dtoverlay=imx219.*vcm/d' "$CONFIG"
+    fi
+
+    if ! grep -qE "^\s*dtoverlay=imx219,cam1\s*$" "$CONFIG"; then
+        if grep -qE "^\s*#\s*dtoverlay=imx219,cam1\s*$" "$CONFIG"; then
+            sed -i 's/^\s*#\s*\(dtoverlay=imx219,cam1\)\s*$/\1/' "$CONFIG"
+        else
+            echo "dtoverlay=imx219,cam1" >> "$CONFIG"
+        fi
+        echo "  ✓ Added dtoverlay=imx219,cam1"
+    else
+        echo "  ✓ dtoverlay=imx219,cam1 already present"
+    fi
+
+    if ! grep -qE "^\s*dtoverlay=${OVERLAY_NAME}" "$CONFIG"; then
+        sed -i "/^\s*dtoverlay=imx219,cam1\s*$/a dtoverlay=${OVERLAY_NAME}" "$CONFIG"
+        echo "  ✓ Added dtoverlay=${OVERLAY_NAME}"
+    else
+        echo "  ✓ dtoverlay=${OVERLAY_NAME} already present"
+    fi
+
+    # SPI CE1 release — frees GPIO7 for general GPIO use.
+    # The default `dtparam=spi=on` claims both CE0 (GPIO8) and CE1
+    # (GPIO7) for SPI0, even when nothing is wired to CE1.  We use
+    # GPIO7 as a strobe line, so swap the param for the spi0-1cs
+    # overlay which leaves CE1 unclaimed.
+    if grep -qE "^\s*dtoverlay=spi0-1cs\s*$" "$CONFIG"; then
+        echo "  ✓ dtoverlay=spi0-1cs already present"
+        # If both lines somehow coexist, drop the bare param so it
+        # doesn't re-claim CE1 when applied later in the section.
+        if grep -qE "^\s*dtparam=spi=on\s*$" "$CONFIG"; then
+            sed -i '/^\s*dtparam=spi=on\s*$/d' "$CONFIG"
+            echo "  ✓ Removed conflicting dtparam=spi=on"
+        fi
+    elif grep -qE "^\s*dtparam=spi=on\s*$" "$CONFIG"; then
+        sed -i 's/^\s*dtparam=spi=on\s*$/dtoverlay=spi0-1cs/' "$CONFIG"
+        echo "  ✓ Replaced dtparam=spi=on with dtoverlay=spi0-1cs (frees GPIO7)"
+    else
+        echo "dtoverlay=spi0-1cs" >> "$CONFIG"
+        echo "  ✓ Added dtoverlay=spi0-1cs (frees GPIO7)"
+    fi
+
+    # I2S release — frees GPIO18 for general GPIO use.
+    # GPIO18 is PCM_CLK; we use it as a strobe line.  If
+    # `dtparam=i2s=on` is set, the kernel claims GPIO18 for the I2S
+    # peripheral and our gpio_request() fails.
+    if grep -qE "^\s*dtparam=i2s=on\s*$" "$CONFIG"; then
+        sed -i '/^\s*dtparam=i2s=on\s*$/d' "$CONFIG"
+        echo "  ✓ Removed dtparam=i2s=on (frees GPIO18)"
+    else
+        echo "  ✓ dtparam=i2s=on not present (GPIO18 free)"
+    fi
+else
+    echo "  ✗ Could not find $CONFIG"
+    echo "    Manually add: dtoverlay=imx219,cam1"
+    echo "                  dtoverlay=${OVERLAY_NAME}"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 5: Summary
+# ═════════════════════════════════════════════════════════════════════════════
+
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  ✓ Server binary:       ${BINARY_PATH}"
+echo "  ✓ DW9714 driver:       installed (DKMS)"
+echo "  ✓ rp1-cfe patched:     installed (DKMS, override active)"
+echo "  ✓ AD5398 blacklist:    ${BLACKLIST_FILE}"
+echo "  ✓ DT overlay:          ${OVERLAY_NAME}.dtbo"
+if [ -f "${TUNING_SRC}" ]; then
+    echo "  ✓ Tuning file:         ${TUNING_SRC}"
+else
+    echo "  ✗ Tuning file:         NOT found"
+fi
+echo "──────────────────────────────────────────────────────"
+echo ""
+echo "Ensure your user has hardware access:"
+echo "  sudo usermod -aG video,i2c,gpio \$USER"
+echo ""
+
+echo "  *** REBOOT REQUIRED ***"
+echo "  The patched rp1-cfe module will not be in use until after reboot."
+echo ""

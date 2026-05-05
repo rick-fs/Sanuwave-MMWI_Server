@@ -1,0 +1,3 @@
+[submodule "MMWI_PIC_common"]
+	path = MMWI_PIC_common
+	url = https://github.com/Sanuwave/MMWI_PIC_common.git

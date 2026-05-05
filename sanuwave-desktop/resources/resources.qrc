@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/calibration">
+        <file>imx708.json</file>
+        <file>imx219.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Sanuwave Client
+Comment=Medical Imaging Client for Wound Analysis
+Exec=SanuwaveClient
+Icon=sanuwave-client
+Terminal=false
+Type=Application
+Categories=Science;Medical;Graphics;
+Keywords=medical;imaging;wound;measurement;thermal;
+StartupNotify=true

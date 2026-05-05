@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+
+OLD_BINARY="/usr/local/bin/sanuwave_prototype"
+
+if [ -f "$OLD_BINARY" ]; then
+    echo "Removing legacy binary: $OLD_BINARY"
+    rm -f "$OLD_BINARY"
+fi

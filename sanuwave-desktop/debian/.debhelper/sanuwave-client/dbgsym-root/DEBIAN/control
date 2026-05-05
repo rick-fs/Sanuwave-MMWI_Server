@@ -1,0 +1,13 @@
+Package: sanuwave-client-dbgsym
+Package-Type: ddeb
+Source: sanuwave-client
+Version: 1.0.0-1
+Auto-Built-Package: debug-symbols
+Architecture: amd64
+Maintainer: Sanuwave <support@sanuwave.com>
+Installed-Size: 116
+Depends: sanuwave-client (= 1.0.0-1)
+Section: debug
+Priority: optional
+Description: debug symbols for sanuwave-client
+Build-Ids: c438847e6f0d0ae17f993e5faa9efe1a2e800ba1

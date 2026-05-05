@@ -1,0 +1,8 @@
+# I2C access for sensors (VL53L4CD, AS7331)
+SUBSYSTEM=="i2c-dev", MODE="0660", GROUP="i2c"
+
+# Camera access
+SUBSYSTEM=="video4linux", MODE="0660", GROUP="video"
+
+# GPIO access (if needed)
+SUBSYSTEM=="gpio", MODE="0660", GROUP="gpio"

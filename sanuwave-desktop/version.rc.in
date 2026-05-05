@@ -1,0 +1,35 @@
+#include <winver.h>
+
+// FILEVERSION and PRODUCTVERSION use: major, minor, patch, build
+// where build = commit count
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,@GIT_COMMIT_COUNT@
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,@GIT_COMMIT_COUNT@
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"  // US English, Unicode
+        BEGIN
+            VALUE "CompanyName",      "Sanuwave\0"
+            VALUE "FileDescription",  "Sanuwave Medical Imaging Client\0"
+            VALUE "FileVersion",      "@VERSION_STRING@\0"
+            VALUE "InternalName",     "@PROJECT_NAME@\0"
+            VALUE "LegalCopyright",   "Copyright (C) 2025 Sanuwave\0"
+            VALUE "OriginalFilename", "@PROJECT_NAME@.exe\0"
+            VALUE "ProductName",      "Sanuwave Client\0"
+            VALUE "ProductVersion",   "@VERSION_STRING@\0"
+            VALUE "GitHash",          "@GIT_HASH_FULL@\0"
+            VALUE "GitBranch",        "@GIT_BRANCH@\0"
+            VALUE "BuildNumber",      "@GIT_COMMIT_COUNT@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252  // US English, Windows Multilingual
+    END
+END

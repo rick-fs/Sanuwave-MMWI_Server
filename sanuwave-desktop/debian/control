@@ -1,0 +1,38 @@
+Source: sanuwave-client
+Section: science
+Priority: optional
+Maintainer: Sanuwave <support@sanuwave.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.16),
+               g++ (>= 9),
+               qt6-base-dev,
+               libgl1-mesa-dev,
+               libturbojpeg0-dev,
+               libceres-dev,
+               libeigen3-dev,
+               libboost-all-dev,
+               libflann-dev,
+               libfreeimage-dev,
+               libmetis-dev,
+               libgoogle-glog-dev,
+               libgflags-dev,
+               libsqlite3-dev,
+               libglew-dev,
+               libcgal-dev
+Standards-Version: 4.6.0
+Homepage: https://sanuwave.com
+
+Package: sanuwave-client
+Architecture: amd64
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Description: Sanuwave Medical Imaging Client
+ Qt-based client application for the Sanuwave medical imaging system.
+ Provides wound measurement and analysis capabilities using multi-camera
+ imaging with RGB, thermal, and sensor data fusion.
+ .
+ Features include:
+  - Multi-camera streaming and capture
+  - Thermal imaging overlay
+  - 3D reconstruction via COLMAP/SfM
+  - Wound measurement tools

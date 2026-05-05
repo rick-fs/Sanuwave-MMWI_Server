@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+		-DENABLE_COLMAP=OFF
+
+override_dh_auto_build:
+	dh_auto_build --verbose
+
+override_dh_auto_install:
+	dh_auto_install
+	install -D -m 644 debian/sanuwave-client.desktop \
+		debian/sanuwave-client/usr/share/applications/sanuwave-client.desktop
+	if [ -f icon.png ]; then \
+		install -D -m 644 icon.png \
+			debian/sanuwave-client/usr/share/icons/hicolor/256x256/apps/sanuwave-client.png; \
+	fi
+
+override_dh_shlibdeps:
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info

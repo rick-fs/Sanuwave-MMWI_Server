@@ -1,0 +1,19 @@
+Package: sanuwave-client
+Version: 1.0.0-1
+Architecture: amd64
+Maintainer: Sanuwave <support@sanuwave.com>
+Installed-Size: 457
+Depends: libc6 (>= 2.34), libgcc-s1 (>= 3.0), libqt6core6 (>= 6.2.0), libqt6gui6 (>= 6.2.0), libqt6network6 (>= 6.1.2), libqt6widgets6 (>= 6.1.2), libstdc++6 (>= 5.2), libturbojpeg
+Section: science
+Priority: optional
+Homepage: https://sanuwave.com
+Description: Sanuwave Medical Imaging Client
+ Qt-based client application for the Sanuwave medical imaging system.
+ Provides wound measurement and analysis capabilities using multi-camera
+ imaging with RGB, thermal, and sensor data fusion.
+ .
+ Features include:
+  - Multi-camera streaming and capture
+  - Thermal imaging overlay
+  - 3D reconstruction via COLMAP/SfM
+  - Wound measurement tools

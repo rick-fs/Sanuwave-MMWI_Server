@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "windows-local",
+      "displayName": "Windows (local)",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "D:/Your/Path/To/Qt/lib/cmake/Qt6"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-local",
+      "configurePreset": "windows-local"
+    }
+  ]
+}

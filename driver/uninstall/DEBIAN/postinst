@@ -1,0 +1,104 @@
+#!/bin/bash
+set -e
+
+DKMS_NAME="dw9714"
+DKMS_VERSION="1.0"
+DKMS_SRC="/usr/src/${DKMS_NAME}-${DKMS_VERSION}"
+OVERLAY_NAME="imx219-b0190-vcm"
+OVERLAY_DIR="/boot/firmware/overlays"
+CONFIG="/boot/firmware/config.txt"
+BLACKLIST_FILE="/etc/modprobe.d/ad5398-blacklist.conf"
+
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  Removing Arducam B0190 DW9714 VCM Driver"
+echo "──────────────────────────────────────────────────────"
+
+# ─── Unload module if loaded ────────────────────────────────────────────────
+if lsmod | grep -q "^dw9714"; then
+    echo "  Unloading dw9714 kernel module..."
+    rmmod dw9714 2>/dev/null || true
+fi
+
+# ─── Remove DKMS registration ──────────────────────────────────────────────
+if command -v dkms > /dev/null 2>&1; then
+    if dkms status "${DKMS_NAME}/${DKMS_VERSION}" 2>/dev/null | grep -q "${DKMS_NAME}"; then
+        echo "  Removing DKMS module ${DKMS_NAME}/${DKMS_VERSION}..."
+        dkms remove "${DKMS_NAME}/${DKMS_VERSION}" --all 2>/dev/null || true
+        echo "  ✓ DKMS module removed"
+    else
+        echo "  DKMS module not registered, skipping"
+    fi
+fi
+
+# ─── Remove DKMS source ────────────────────────────────────────────────────
+if [ -d "${DKMS_SRC}" ]; then
+    echo "  Removing DKMS source at ${DKMS_SRC}..."
+    rm -rf "${DKMS_SRC}"
+    echo "  ✓ DKMS source removed"
+fi
+
+# ─── Remove manually installed .ko (from pre-DKMS testing) ─────────────────
+KVER=$(uname -r)
+MANUAL_KO="/lib/modules/${KVER}/kernel/drivers/media/i2c/dw9714.ko"
+if [ -f "${MANUAL_KO}" ]; then
+    echo "  Removing manually installed module ${MANUAL_KO}..."
+    rm -f "${MANUAL_KO}"
+    depmod -a
+    echo "  ✓ Manual module removed, depmod updated"
+fi
+
+# ─── Remove blacklist ──────────────────────────────────────────────────────
+if [ -f "${BLACKLIST_FILE}" ]; then
+    echo "  Removing ad5398 blacklist..."
+    rm -f "${BLACKLIST_FILE}"
+    echo "  ✓ Blacklist removed"
+fi
+
+# ─── Remove overlay ────────────────────────────────────────────────────────
+if [ -f "${OVERLAY_DIR}/${OVERLAY_NAME}.dtbo" ]; then
+    echo "  Removing overlay ${OVERLAY_NAME}.dtbo..."
+    rm -f "${OVERLAY_DIR}/${OVERLAY_NAME}.dtbo"
+    echo "  ✓ Overlay removed"
+fi
+
+# ─── Revert config.txt ─────────────────────────────────────────────────────
+NEEDS_REBOOT=false
+
+if [ -f "$CONFIG" ]; then
+    # Remove the B0190 overlay line
+    if grep -qE "^\s*dtoverlay=${OVERLAY_NAME}" "$CONFIG"; then
+        echo "  Removing dtoverlay=${OVERLAY_NAME} from $CONFIG..."
+        sed -i "/^\s*dtoverlay=${OVERLAY_NAME}/d" "$CONFIG"
+        NEEDS_REBOOT=true
+        echo "  ✓ Removed"
+    fi
+
+    # Restore the original dtoverlay=imx219,cam1,vcm if imx219,cam1 exists without vcm
+    if grep -qE "^\s*dtoverlay=imx219,cam1\s*$" "$CONFIG"; then
+        echo "  Restoring dtoverlay=imx219,cam1,vcm..."
+        sed -i 's/^\(\s*dtoverlay=imx219,cam1\)\s*$/\1,vcm/' "$CONFIG"
+        NEEDS_REBOOT=true
+        echo "  ✓ Restored"
+    fi
+fi
+
+# ─── Summary ────────────────────────────────────────────────────────────────
+echo ""
+echo "──────────────────────────────────────────────────────"
+echo "  ✓ DW9714 driver:    removed"
+echo "  ✓ AD5398 blacklist: removed"
+echo "  ✓ DT overlay:      removed"
+echo "  ✓ config.txt:      reverted to stock imx219,cam1,vcm"
+echo "──────────────────────────────────────────────────────"
+
+if [ "$NEEDS_REBOOT" = true ]; then
+    echo ""
+    echo "  *** REBOOT REQUIRED for changes to take effect ***"
+    echo ""
+fi
+
+echo ""
+echo "You can now remove this package:"
+echo "  sudo dpkg --purge sanuwave-dw9714-uninstall"
+echo ""

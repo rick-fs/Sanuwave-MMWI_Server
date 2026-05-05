@@ -1,0 +1,10 @@
+sanuwave-client (1.0.0-1) unstable; urgency=medium
+
+  * Initial release
+  * Qt6-based medical imaging client
+  * Multi-camera streaming support (RGB, thermal)
+  * TurboJPEG hardware-accelerated decoding
+  * COLMAP integration for 3D reconstruction
+  * Wound measurement and analysis tools
+
+ -- Sanuwave <support@sanuwave.com>  Mon, 09 Dec 2024 12:00:00 +0000

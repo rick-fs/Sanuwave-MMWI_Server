@@ -1,0 +1,6 @@
+Package: sanuwave-dw9714-uninstall
+Version: 1.0
+Architecture: arm64
+Maintainer: Sanuwave
+Description: Removes DW9714 VCM driver, overlay, and blacklist.
+Priority: optional

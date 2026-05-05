@@ -1,0 +1,8 @@
+
+.vscode/
+
+build/
+
+.clang-format
+
+t.txt
