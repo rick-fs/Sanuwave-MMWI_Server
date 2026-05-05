@@ -34,7 +34,7 @@ option(BUILD_SERVER "Build the main server executable" ON)
 
 set(VERSION_MAJOR 1)
 set(VERSION_MINOR 0)
-set(VERSION_PATCH 0)
+set(VERSION_PATCH 1)
 
 find_package(Git QUIET)
 if(GIT_FOUND)
