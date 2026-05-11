@@ -32,6 +32,8 @@
 #include "protocol_constants.h"
 #include "aboutdialog.h"
 #include "version.h"
+#include "motion_chart_widget.h"
+#include "motion_settings_dialog.h"
 
 #include "uvbf_capture_dialog.h"
 #include "uvbf_vblank_dialog.h"
@@ -117,6 +119,26 @@ MainWindow::MainWindow(QWidget *parent)
             streamFrameCount = 0;
         } });
     streamFpsTimer->start(1000);
+
+    // Motion indicator: decay timer clears the display if no rgb-stream
+    // frame arrives for a while (stream stopped, network stall, etc.).
+    // Thresholds come from QSettings so they can be tuned without a
+    // client release.
+    motionDecayTimer_ = new QTimer(this);
+    motionDecayTimer_->setSingleShot(true);
+    connect(motionDecayTimer_, &QTimer::timeout,
+            this, &MainWindow::onMotionDecayTimeout);
+
+    motionEnterMoving_ = settings->value("motion/enterMovingPx", 1.5).toDouble();
+    motionExitMoving_  = settings->value("motion/exitMovingPx",  0.5).toDouble();
+    motionConfFloor_   = settings->value("motion/confFloor",     0.05).toDouble();
+    motionDecayMs_     = settings->value("motion/decayMs",       1000).toInt();
+
+    // Push the loaded thresholds to the chart now that QSettings has been
+    // consulted (setupStreamingGroup ran before settings load and would
+    // otherwise have only the compile-time defaults).
+    if (motionChart_)
+        motionChart_->setThresholds(motionEnterMoving_, motionExitMoving_);
 
     imageViewerWindow = new ImageViewerWindow(this);
     setupSettingsManager();
@@ -262,6 +284,31 @@ ExpandableGroupBox *MainWindow::setUpStreamingSettingsGroup(QWidget *parent)
     connect(streamRotate180CheckBox, &QCheckBox::toggled,
             this, [this](bool c)
             { onRotationChanged(c, "stream"); });
+
+    layout->addWidget(new QLabel("Motion:"), 4, 0);
+    streamMotionEnabledCheckBox = new QCheckBox("Measure motion (rgb only)");
+    streamMotionEnabledCheckBox->setChecked(
+        settings->value("motion/enabledAtStart", false).toBool());
+    streamMotionEnabledCheckBox->setToolTip(
+        tr("Server-side phase correlation on a centered ROI of each preview "
+           "frame. Indicates how much the camera has moved between frames. "
+           "Adds ~2-3 ms per frame on the Pi 5. RGB streams only."));
+    layout->addWidget(streamMotionEnabledCheckBox, 4, 1);
+    // Persist the user's last setting so it survives a client restart.
+    connect(streamMotionEnabledCheckBox, &QCheckBox::toggled,
+            this, [this](bool c) {
+                settings->setValue("motion/enabledAtStart", c);
+            });
+
+    // Settings button: opens a non-modal dialog for live threshold tuning
+    // and server-side ROI/reference adjustment. The dialog reuses the same
+    // QSettings keys this MainWindow reads on startup.
+    motionSettingsBtn_ = new QPushButton(tr("Settings\u2026"), this);
+    motionSettingsBtn_->setToolTip(
+        tr("Tune motion-indicator thresholds and measurement parameters."));
+    connect(motionSettingsBtn_, &QPushButton::clicked,
+            this, &MainWindow::onMotionSettingsClicked);
+    layout->addWidget(motionSettingsBtn_, 4, 2);
 
     return group;
 }
@@ -703,7 +750,26 @@ ExpandableGroupBox *MainWindow::setupStreamingGroup()
     streamFpsLabel->setStyleSheet("QLabel { padding: 10px; background-color: #ecf0f1; border-radius: 5px; font-family: monospace; }");
     buttonLayout->addWidget(streamFpsLabel);
 
+    // Numeric motion indicator. Fixed minimum width so the layout does not
+    // jitter as the value changes. Updated only on rgb-stream frames; the
+    // viewer overlay badge mirrors the state.
+    motionLabel_ = new QLabel("Motion: -");
+    motionLabel_->setMinimumWidth(140);
+    motionLabel_->setStyleSheet("QLabel { padding: 10px; background-color: #ecf0f1; border-radius: 5px; font-family: monospace; }");
+    buttonLayout->addWidget(motionLabel_);
+
     mainLayout->addLayout(buttonLayout);
+
+    // Motion history chart: ECG-style strip chart, scrolling left, showing
+    // the last 30 s of trans_px values. Collapsed by default so it does
+    // not take up vertical real estate unless the operator opens it.
+    motionHistoryGroup_ = new ExpandableGroupBox("Motion History", streamingGroup);
+    QVBoxLayout* mhLayout = new QVBoxLayout(motionHistoryGroup_->getContentWidget());
+    mhLayout->setContentsMargins(4, 4, 4, 4);
+    motionChart_ = new MotionChartWidget(motionHistoryGroup_);
+    motionChart_->setThresholds(motionEnterMoving_, motionExitMoving_);
+    mhLayout->addWidget(motionChart_);
+    mainLayout->addWidget(motionHistoryGroup_);
 
     return streamingGroup;
 }
@@ -2932,11 +2998,171 @@ void MainWindow::onStreamFrameReceived(const QByteArray &data, const StreamFrame
     }
 
     displayStreamFrame(data, info);
+
+    // Motion indicator: only updated from rgb-stream frames. Thermal frames
+    // (single thermal stream, and dual stream's thermal leg) carry
+    // motion.valid==false and would push the indicator into Unknown on every
+    // other dual-stream frame if we did not gate here.
+    const QString& mod = info.modality;
+    const bool isRgbStream =
+        (mod == Camera::IMX708    ||   // "imx708"
+         mod == Camera::IMX219    ||   // "imx219"
+         mod == Modality::RGB);        // "rgb"   (dual-stream rgb leg)
+    if (isRgbStream)
+        updateMotionIndicator(info);
 }
 
 void MainWindow::onIntervalFrameReceived(const QByteArray &data, const StreamFrameInfo &info)
 {
     displayIntervalFrame(data, info);
+}
+
+// ---------------------------------------------------------------------------
+// Motion indicator
+//
+// Drives three surfaces from a single source of truth (StreamFrameInfo):
+//   1. Numeric label in the FPS strip ("Motion: 0.42 px")
+//   2. Overlay badge on the image viewer (STILL / MOVING / hidden)
+//   3. Scrolling history chart inside the streaming panel
+//
+// Hysteresis between Still and Moving prevents the badge from flickering
+// when motion is right at threshold. Caller (onStreamFrameReceived) gates
+// to rgb-only streams so we do not get pulled into Unknown on every other
+// dual-stream frame.
+// ---------------------------------------------------------------------------
+void MainWindow::updateMotionIndicator(const StreamFrameInfo& info)
+{
+    const StreamFrameInfo::Motion& m = info.motion;
+
+    // Reset the decay timer on every measurement (valid or not) - the
+    // stream is alive even if motion was filtered out by the confidence
+    // floor.
+    motionDecayTimer_->start(motionDecayMs_);
+
+    if (!m.valid || m.confidence < motionConfFloor_)
+    {
+        motionLabel_->setText("Motion: -");
+        if (motionUiState_ != MotionUiState::Unknown)
+        {
+            motionUiState_ = MotionUiState::Unknown;
+            if (imageViewerWindow)
+                imageViewerWindow->setMotionState(
+                    ImageViewerWindow::MotionBadge::Unknown);
+        }
+        // No sample fed to the chart on filtered frames - a gap in the
+        // trace correctly indicates "no measurement available".
+        return;
+    }
+
+    motionLabel_->setText(QString("Motion: %1 px").arg(m.trans_px, 0, 'f', 2));
+
+    // Feed the history chart with the server-side timestamp so the x axis
+    // remains honest under network jitter.
+    if (motionChart_)
+        motionChart_->addSample(static_cast<qint64>(info.timestamp), m.trans_px);
+
+    // Hysteresis: enter Moving at motionEnterMoving_, exit at
+    // motionExitMoving_. Unknown promotes to Still or Moving depending on
+    // the first valid reading.
+    MotionUiState next = motionUiState_;
+    if (motionUiState_ == MotionUiState::Moving)
+    {
+        if (m.trans_px <= motionExitMoving_)
+            next = MotionUiState::Still;
+    }
+    else // Still or Unknown
+    {
+        if (m.trans_px >= motionEnterMoving_)
+            next = MotionUiState::Moving;
+        else
+            next = MotionUiState::Still;
+    }
+
+    if (next != motionUiState_)
+    {
+        motionUiState_ = next;
+        if (imageViewerWindow)
+        {
+            ImageViewerWindow::MotionBadge badge =
+                (next == MotionUiState::Moving)
+                    ? ImageViewerWindow::MotionBadge::Moving
+                    : ImageViewerWindow::MotionBadge::Still;
+            imageViewerWindow->setMotionState(badge);
+        }
+    }
+}
+
+void MainWindow::onMotionDecayTimeout()
+{
+    // No rgb-stream frame in motionDecayMs_ - clear the indicator so a
+    // stale reading does not linger after stream stop.
+    motionLabel_->setText("Motion: -");
+    motionUiState_ = MotionUiState::Unknown;
+    if (imageViewerWindow)
+        imageViewerWindow->setMotionState(
+            ImageViewerWindow::MotionBadge::Unknown);
+    // The chart trims its own samples and will naturally drain to empty
+    // over the next windowMs_; we do not clear() it explicitly so the
+    // operator can still see the last 30 s of history after a stop.
+}
+
+// ---------------------------------------------------------------------------
+// Motion settings dialog
+//
+// Lazily constructed on first click so the cost is only paid if the
+// operator actually opens it. Non-modal, parented to MainWindow, kept
+// alive across show/hide cycles. Updates to thresholds apply immediately
+// to the in-memory state and the chart's reference lines; ROI/reference
+// changes only persist (they are read by onStreamStart/Dual on the next
+// command).
+// ---------------------------------------------------------------------------
+void MainWindow::onMotionSettingsClicked()
+{
+    if (!motionSettingsDialog_)
+    {
+        motionSettingsDialog_ = new MotionSettingsDialog(settings, this);
+
+        connect(motionSettingsDialog_, &MotionSettingsDialog::enterMovingChanged,
+                this, &MainWindow::onMotionEnterChanged);
+        connect(motionSettingsDialog_, &MotionSettingsDialog::exitMovingChanged,
+                this, &MainWindow::onMotionExitChanged);
+        connect(motionSettingsDialog_, &MotionSettingsDialog::confFloorChanged,
+                this, &MainWindow::onMotionConfChanged);
+        connect(motionSettingsDialog_, &MotionSettingsDialog::decayMsChanged,
+                this, &MainWindow::onMotionDecayChanged);
+        // ROI and reference signals do not need MainWindow slots - the
+        // dialog persists them via QSettings, and onStreamStart/Dual read
+        // them directly on the next command build.
+    }
+    motionSettingsDialog_->show();
+    motionSettingsDialog_->raise();
+    motionSettingsDialog_->activateWindow();
+}
+
+void MainWindow::onMotionEnterChanged(double v)
+{
+    motionEnterMoving_ = v;
+    if (motionChart_)
+        motionChart_->setThresholds(motionEnterMoving_, motionExitMoving_);
+}
+
+void MainWindow::onMotionExitChanged(double v)
+{
+    motionExitMoving_ = v;
+    if (motionChart_)
+        motionChart_->setThresholds(motionEnterMoving_, motionExitMoving_);
+}
+
+void MainWindow::onMotionConfChanged(double v)
+{
+    motionConfFloor_ = v;
+}
+
+void MainWindow::onMotionDecayChanged(int v)
+{
+    motionDecayMs_ = v;
+    // No need to restart the timer here - the next motion frame will
+    // call motionDecayTimer_->start(motionDecayMs_) with the new value.
 }
 
 void MainWindow::onImuDataReceived(const QJsonObject &data)
@@ -4121,6 +4347,8 @@ void MainWindow::onStreamStart()
     rgbDecoder->start();
     thermalDecoder->start();
     lastThermalDecoded = QImage();
+    if (motionChart_)
+        motionChart_->clear();   // fresh chart for new session
     QString camera = streamCameraSelector->currentData().toString();
     QVariantList dims = streamResolutionCombo->currentData().toList();
 
@@ -4145,6 +4373,20 @@ void MainWindow::onStreamStart()
         cmd[Param::QUALITY] = QString::number(streamQualitySpinBox->value());
     }
 
+    // Motion measurement (rgb only). The server ignores these params on
+    // thermal streams, but we omit them anyway to keep the command tidy.
+    if (camera != Camera::THERMAL && streamMotionEnabledCheckBox &&
+        streamMotionEnabledCheckBox->isChecked())
+    {
+        cmd[Param::MOTION_ENABLED]   = "true";
+        cmd[Param::MOTION_ROI_SIZE]  =
+            QString::number(settings->value("motion/roiSize", 512).toInt());
+        cmd[Param::MOTION_REFERENCE] =
+            settings->value("motion/reference",
+                            sanuwave::protocol::MotionReference::PREVIOUS)
+                .toString();
+    }
+
     sendCommand(cmd);
 }
 
@@ -4154,6 +4396,8 @@ void MainWindow::onStreamStartDual()
     rgbDecoder->start();
     thermalDecoder->start();
     lastThermalDecoded = QImage();
+    if (motionChart_)
+        motionChart_->clear();   // fresh chart for new session
     QVariantList dims = streamResolutionCombo->currentData().toList();
     QJsonObject cmd;
     cmd[Param::COMMAND] = Command::STREAM_START;
@@ -4161,6 +4405,20 @@ void MainWindow::onStreamStartDual()
     cmd[Param::WIDTH] = QString::number(dims[0].toInt());
     cmd[Param::HEIGHT] = QString::number(dims[1].toInt());
     cmd[Param::QUALITY] = QString::number(streamQualitySpinBox->value());
+
+    // Motion measurement applies to dual stream's rgb leg only (server-
+    // side gate). Thermal frames ignore these.
+    if (streamMotionEnabledCheckBox && streamMotionEnabledCheckBox->isChecked())
+    {
+        cmd[Param::MOTION_ENABLED]   = "true";
+        cmd[Param::MOTION_ROI_SIZE]  =
+            QString::number(settings->value("motion/roiSize", 512).toInt());
+        cmd[Param::MOTION_REFERENCE] =
+            settings->value("motion/reference",
+                            sanuwave::protocol::MotionReference::PREVIOUS)
+                .toString();
+    }
+
     if (imageViewerWindow)
     {
         imageViewerWindow->setRotation180(isRotated(Camera::IMX708));

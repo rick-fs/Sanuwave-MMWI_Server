@@ -274,9 +274,9 @@ int main()
         sanuwave::TCPServer server(8080);
 
         commandHandler.setStreamFrameCallback(
-            [&server](const std::vector<uint8_t> &frameData, const std::string &modality,
-                      const std::string &format, int width, int height, uint64_t timestamp_ms)
-            { server.broadcastStreamFrame(frameData, modality, format, width, height, timestamp_ms); });
+            [&server](const std::vector<uint8_t>& frameData,
+                      const sanuwave::StreamFrameMeta& meta)
+            { server.broadcastStreamFrame(frameData, meta); });
 
         LOG_INFO << "Stream frame callback configured" << std::endl;
 

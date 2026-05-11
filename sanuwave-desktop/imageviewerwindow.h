@@ -34,6 +34,12 @@ public:
     void setDualFrame(const QImage& rgb, const QImage& thermal);
     void updateStreamFrame(const QImage& image, const QString& info);
 
+    // Motion overlay badge. Floats over the top-right of the scroll-area
+    // viewport (pinned to visible area, not the scrolled image). Unknown
+    // hides the badge entirely; the MainWindow drives state transitions.
+    enum class MotionBadge { Unknown, Still, Moving };
+    void setMotionState(MotionBadge state);
+
     // RAW data storage for DNG export
     void setRawData(const sanuwave::RawImageData& rawData);
     void clearRawData();
@@ -54,16 +60,27 @@ private slots:
     void onSaveImage();
     void onSaveAsDng();
 
+protected:
+    // Watches scrollArea->viewport() for resize events so the motion badge
+    // can be repositioned to the top-right corner of the visible area.
+    bool eventFilter(QObject* obj, QEvent* ev) override;
+
 private:
     void setupUI();
     void updateImageDisplay();
     QImage applyRotation(const QImage& image) const;
+    void   positionMotionBadge();
 
     // UI Components
     QScrollArea* scrollArea;
     ImageDisplayWidget* imageWidget;
     QLabel* infoLabel;
-    
+
+    // Motion overlay badge - parented to scrollArea->viewport() so it
+    // stays pinned to the visible area regardless of scroll position.
+    QLabel*     motionBadge_      = nullptr;
+    MotionBadge motionBadgeState_ = MotionBadge::Unknown;
+
     // Toolbar
     QToolBar* toolbar;
     QAction* zoomInAction;

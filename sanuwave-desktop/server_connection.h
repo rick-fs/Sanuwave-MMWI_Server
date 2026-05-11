@@ -17,6 +17,19 @@ struct StreamFrameInfo {
     int width = 0;
     int height = 0;
     uint64_t timestamp = 0;
+
+    // Optional per-frame motion measurement. valid==false means motion
+    // was not measured for this frame (feature disabled, first frame of
+    // a stream, ROI too large, low confidence, etc.). Clients should
+    // treat as "unknown", not "still". Thresholding is the client's
+    // responsibility.
+    struct Motion {
+        bool    valid      = false;
+        double  trans_px   = 0.0;
+        double  rot_deg    = 0.0;
+        double  confidence = 0.0;
+        QString reference;   // "previous" | "anchor"
+    } motion;
 };
 
 struct SensorTimingInfo {

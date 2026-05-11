@@ -38,6 +38,9 @@
 #include "camera_ui_controller.h"
 #include "server_connection.h"
 #include "calibration_viewer_dialog.h"
+
+class MotionChartWidget;
+class MotionSettingsDialog;
 #include "lens_calibration_dialog.h"
 #include "camera_settings_manager.h"
 #include "raw_diag_window.h"
@@ -118,6 +121,12 @@ private slots:
     void onStreamFrameReceived(const QByteArray &data, const StreamFrameInfo &info);
     void onIntervalFrameReceived(const QByteArray &data, const StreamFrameInfo &info);
     void onStreamFrameDecoded(const QImage &image, const StreamFrameInfo &info);
+    void onMotionDecayTimeout();
+    void onMotionSettingsClicked();
+    void onMotionEnterChanged(double v);
+    void onMotionExitChanged(double v);
+    void onMotionConfChanged(double v);
+    void onMotionDecayChanged(int v);
     void onDistanceDataReceived(const QJsonObject &data);
     void onUVDataReceived(const QJsonObject &data);
     void onImuDataReceived  (const QJsonObject& data);
@@ -194,6 +203,13 @@ private:
     void displayStreamFrame(const QByteArray& frameData, const StreamFrameInfo& info);
     void displayIntervalFrame(const QByteArray &frameData,
                                        const StreamFrameInfo &info);
+
+    // Motion-indicator driver: updates the FPS-strip numeric label, the
+    // viewer overlay badge, and the motion-history chart from an rgb
+    // stream frame. Caller is expected to gate on rgb-only modalities;
+    // thermal frames carry motion.valid==false but the helper handles the
+    // dead-data case anyway.
+    void updateMotionIndicator(const StreamFrameInfo& info);
     void displayALSData(const QJsonObject& data);
     void requestSensorTiming(const QString &camera, int width, int height);
     void displayDistanceData(const QJsonObject &data);
@@ -252,9 +268,15 @@ private:
     QPushButton* streamDualButton;
     QLabel* streamStatusLabel;
     QLabel* streamFpsLabel;
+    QLabel* motionLabel_ = nullptr;   // numeric trans_px display in status strip
+    QPushButton* motionSettingsBtn_ = nullptr;
+    MotionSettingsDialog* motionSettingsDialog_ = nullptr;
+    ExpandableGroupBox* motionHistoryGroup_ = nullptr;
+    MotionChartWidget*  motionChart_        = nullptr;
     QComboBox* streamResolutionCombo;
     QSpinBox* streamQualitySpinBox;
     QCheckBox* streamRotate180CheckBox = nullptr;
+    QCheckBox* streamMotionEnabledCheckBox = nullptr;   // motion measurement on/off
     // Frame duration lock UI
     ExpandableGroupBox *streamingFrameDurationGroupBox = nullptr;
     QCheckBox         *frameDurationLockCheckBox       = nullptr;
@@ -479,6 +501,21 @@ private:
     bool isDualStreaming = false;
     QTimer* streamFpsTimer;
     int streamFrameCount;
+
+    // ---- Motion-indicator state ----
+    // Hysteresis between Still and Moving prevents the badge from flickering
+    // when motion is right at threshold. Tunables come from QSettings so
+    // they can be adjusted without a client release. Defaults: enter Moving
+    // at 1.5 px translation, exit at 0.5 px, confidence floor 0.05 to
+    // filter flat / occluded scenes.
+    enum class MotionUiState { Unknown, Still, Moving };
+    QTimer*        motionDecayTimer_  = nullptr;   // clears stale display
+    MotionUiState  motionUiState_     = MotionUiState::Unknown;
+    double         motionEnterMoving_ = 1.5;
+    double         motionExitMoving_  = 0.5;
+    double         motionConfFloor_   = 0.05;
+    int            motionDecayMs_     = 1000;
+
     QTimer* distanceStreamTimer;
     bool distanceStreaming;
     bool distanceInitialized;

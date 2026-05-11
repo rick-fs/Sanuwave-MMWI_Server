@@ -4,11 +4,13 @@
 #ifndef STREAM_CONTEXT_H
 #define STREAM_CONTEXT_H
 
+#include "stream_frame_meta.h"
+
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 namespace sanuwave
 {
@@ -16,13 +18,12 @@ namespace sanuwave
 class IJpegEncoder;
 class VBlankStrobeController;
 
-// Callback signature matching CommandHandler::setStreamFrameCallback
+// Callback signature matching CommandHandler::setStreamFrameCallback.
+// The meta argument carries everything the wire frame needs, including
+// optional per-frame motion measurement (see StreamFrameMeta::Motion).
 using StreamFrameCallback = std::function<void(
     const std::vector<uint8_t>& data,
-    const std::string& modality,
-    const std::string& format,
-    int width, int height,
-    uint64_t timestamp)>;
+    const StreamFrameMeta&      meta)>;
 
 struct StreamContext
 {
@@ -37,6 +38,17 @@ struct StreamContext
 
     // Optional VBlank strobe controller. nullptr = strobe disabled.
     VBlankStrobeController* strobe = nullptr;
+
+    // Optional per-frame motion measurement.
+    // When enabled, the rgb stream worker computes a phase-correlation
+    // translation magnitude on a centered ROI of each preview frame and
+    // populates StreamFrameMeta::Motion on the way out.
+    struct MotionConfig
+    {
+        bool        enabled   = false;
+        int         roi_size  = 512;         // pixels (power-of-two recommended)
+        std::string reference = "previous";  // protocol::MotionReference::PREVIOUS | ANCHOR
+    } motion;
 };
 
 } // namespace sanuwave

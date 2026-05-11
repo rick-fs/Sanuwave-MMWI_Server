@@ -1331,6 +1331,43 @@ std::string CommandHandler::handleStreamStart(const std::map<std::string, std::s
     if (streaming)
         return buildJsonError("Stream already active. Stop current stream first.");
 
+    // Parse optional motion-measurement parameters. Staged into
+    // pendingMotion_, which the rgb start methods copy into their
+    // StreamContext. Thermal start methods ignore this (motion is
+    // rgb-only). Defaults: disabled, ROI 512 px, reference "previous".
+    {
+        namespace P = sanuwave::protocol;
+        pendingMotion_ = StreamContext::MotionConfig{};   // reset to defaults
+
+        pendingMotion_.enabled  = p.getBool(Param::MOTION_ENABLED,  false);
+        int roi                 = p.getInt (Param::MOTION_ROI_SIZE, 512);
+        if (roi < 64 || roi > 2048)
+        {
+            LOG_WARNING << "motion: ROI " << roi
+                        << " out of range [64,2048], using 512" << std::endl;
+            roi = 512;
+        }
+        pendingMotion_.roi_size = roi;
+
+        std::string ref = p.getString(Param::MOTION_REFERENCE,
+                                      P::MotionReference::PREVIOUS);
+        if (ref != P::MotionReference::PREVIOUS &&
+            ref != P::MotionReference::ANCHOR)
+        {
+            LOG_WARNING << "motion: unknown reference '" << ref
+                        << "', using '" << P::MotionReference::PREVIOUS
+                        << "'" << std::endl;
+            ref = P::MotionReference::PREVIOUS;
+        }
+        pendingMotion_.reference = ref;
+
+        if (pendingMotion_.enabled)
+        {
+            LOG_INFO << "  motion: enabled roi=" << pendingMotion_.roi_size
+                     << " ref=" << pendingMotion_.reference << std::endl;
+        }
+    }
+
     bool success = false;
     if (camera == Camera::IMX708)
         success = startIMX708Stream(width, height, quality);
@@ -1479,7 +1516,8 @@ bool CommandHandler::startIMX708Stream(int width, int height, int quality)
     StreamContext ctx{streaming, quality, width, height,
                      streamModality, StreamFormat::JPEG,
                      jpegEncoder.get(), streamCallback,
-                    strobeController.get()};
+                     strobeController.get(),
+                     pendingMotion_}; 
     streamWorker = std::thread(rgbStreamWorker, imx708Camera, std::move(ctx));
 
     return true;
@@ -1517,7 +1555,8 @@ bool CommandHandler::startIMX219Stream(int width, int height, int quality)
     StreamContext ctx{streaming, quality, width, height,
                      streamModality, StreamFormat::JPEG,
                      jpegEncoder.get(), streamCallback,
-                    strobeController.get()};
+                     strobeController.get(),
+                     pendingMotion_};  
     streamWorker = std::thread(rgbStreamWorker, imx219Camera, std::move(ctx));
 
     return true;
@@ -1553,7 +1592,9 @@ bool CommandHandler::startThermalStream(int width, int height, int quality)
 
     StreamContext ctx{streaming, quality, width, height,
                      streamModality, StreamFormat::JPEG,
-                     jpegEncoder.get(), streamCallback};
+                     jpegEncoder.get(), streamCallback,
+                     nullptr,                          // no strobe on thermal
+                     StreamContext::MotionConfig{}};   // motion disabled (rgb-only)
     streamWorker = std::thread(thermalStreamWorker, thermalCamera,
                                std::move(ctx), captureScale);
 
@@ -1609,13 +1650,20 @@ bool CommandHandler::startDualStream(int rgbWidth, int rgbHeight, int quality)
     // RGB thread — runs at camera's native rate
     StreamContext rgbCtx{dualStreaming, quality, rgbWidth, rgbHeight,
                          Modality::RGB, StreamFormat::JPEG,
-                         jpegEncoder.get(), streamCallback};
+                         jpegEncoder.get(), streamCallback,
+                         nullptr,                // no strobe in dual mode
+                         pendingMotion_};        // commit 3: rgb-only motion measurement
     streamWorker = std::thread(rgbStreamWorker, imx708Camera, std::move(rgbCtx));
 
-    // Thermal thread — runs at Lepton's native rate
+    // Thermal thread — runs at Lepton's native rate.
+    // Motion measurement is intentionally NOT enabled on thermal: phase
+    // correlation on a Lepton's low-resolution low-contrast output is not
+    // meaningful, and thermalStreamWorker is a separate function.
     StreamContext thermalCtx{dualStreaming, quality, 0, 0,
                              Modality::THERMAL, StreamFormat::JPEG,
-                             jpegEncoderDual.get(), streamCallback};
+                             jpegEncoderDual.get(), streamCallback,
+                             nullptr,                          // no strobe
+                             StreamContext::MotionConfig{}};   // motion disabled
     dualStreamWorker = std::thread(thermalStreamWorker, thermalCamera,
                                     std::move(thermalCtx), 1);
 
@@ -1785,8 +1833,16 @@ bool CommandHandler::startIntervalStill(const std::string& camera,
                         uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now.time_since_epoch()).count();
 
-                        streamCallback(encoded, modality, StreamFormat::JPEG,
-                                       width, height, ts);
+                        StreamFrameMeta frameMeta;
+                        frameMeta.modality     = modality;
+                        frameMeta.format       = StreamFormat::JPEG;
+                        frameMeta.width        = width;
+                        frameMeta.height       = height;
+                        frameMeta.timestamp_ms = ts;
+                        // motion left default (valid==false): interval-still
+                        // does not measure motion.
+
+                        streamCallback(encoded, frameMeta);
                         frameCount++;
 
                         LOG_DEBUG << "Interval still sent frame " << frameCount
@@ -4012,12 +4068,9 @@ void CommandHandler::onClientDisconnect()
     LOG_INFO << "Cleanup complete" << std::endl;
 }
 
-void CommandHandler::setStreamFrameCallback(
-    std::function<void(const std::vector<uint8_t> &, const std::string &, const std::string &, int,
-                       int, uint64_t)>
-        callback)
+void CommandHandler::setStreamFrameCallback(StreamFrameCallback callback)
 {
-    streamCallback = callback;
+    streamCallback = std::move(callback);
 }
 
 void CommandHandler::clearImageData()

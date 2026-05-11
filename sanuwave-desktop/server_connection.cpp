@@ -421,6 +421,22 @@ void ServerConnection::processJsonResponse(const QJsonObject &response)
         m_currentFrameInfo.width = response["width"].toInt();
         m_currentFrameInfo.height = response["height"].toInt();
         m_currentFrameInfo.timestamp = static_cast<uint64_t>(response["timestamp_ms"].toDouble());
+
+        // Reset motion to default (valid==false) so a frame without a motion
+        // sub-object does not inherit the previous frame's measurement.
+        m_currentFrameInfo.motion = StreamFrameInfo::Motion{};
+
+        namespace MF = sanuwave::protocol::MotionField;
+        if (response.contains(MF::OBJECT))
+        {
+            QJsonObject mo = response[MF::OBJECT].toObject();
+            m_currentFrameInfo.motion.valid      = mo[MF::VALID].toBool(false);
+            m_currentFrameInfo.motion.trans_px   = mo[MF::TRANS_PX].toDouble(0.0);
+            m_currentFrameInfo.motion.rot_deg    = mo[MF::ROT_DEG].toDouble(0.0);
+            m_currentFrameInfo.motion.confidence = mo[MF::CONFIDENCE].toDouble(0.0);
+            m_currentFrameInfo.motion.reference  = mo[MF::REFERENCE].toString();
+        }
+
         m_receivingStreamFrame = true;
     }
     else if (type == "capture_complete")

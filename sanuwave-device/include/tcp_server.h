@@ -10,18 +10,14 @@
 #include <string>
 #include <thread>
 #include <vector>
-
+#include "stream_frame_meta.h" 
 namespace sanuwave
 {
 
 struct FramePacket
 {
     std::vector<uint8_t> data;
-    std::string modality;
-    std::string format;
-    int width;
-    int height;
-    uint64_t timestamp_ms;
+    sanuwave::StreamFrameMeta meta;
 };
 
 class TCPServer
@@ -64,9 +60,7 @@ class TCPServer
      * Queue a stream frame for sending (non-blocking)
      * Frames are dropped if queue is full
      */
-    void broadcastStreamFrame(const std::vector<uint8_t> &frameData, const std::string &modality,
-                              const std::string &format, int width, int height,
-                              uint64_t timestamp_ms);
+    void broadcastStreamFrame(const std::vector<uint8_t> &frameData, const sanuwave::StreamFrameMeta& meta);
 
     int getClientCount();
 

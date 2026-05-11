@@ -242,6 +242,13 @@ namespace Param {
     // Interval capture
     constexpr const char* INTERVAL_MS = "interval_ms";
 
+    // Motion measurement (streaming).
+    // Per-frame translation magnitude computed via phase correlation on a
+    // centered ROI of the preview frame. Thresholding lives client-side.
+    constexpr const char* MOTION_ENABLED   = "motion_enabled";     // bool, default false
+    constexpr const char* MOTION_ROI_SIZE  = "motion_roi_size";    // pixels, default 512
+    constexpr const char* MOTION_REFERENCE = "motion_reference";   // "previous" | "anchor"
+
     // Sensor temperature
     constexpr const char* TEMPERATURE_CELSIUS  = "celsius";
     constexpr const char* TEMPERATURE_RELIABLE = "reliable";
@@ -305,6 +312,34 @@ namespace DistanceField {
 namespace FrameDurationField {
     constexpr auto MIN_US = "min_frame_duration_us";
     constexpr auto MAX_US = "max_frame_duration_us";
+}
+
+// ============================================================================
+// MOTION MEASUREMENT FIELDS  (keys in the per-frame stream_frame motion sub-object)
+// ============================================================================
+//
+// Wire shape inside a stream_frame header:
+//   "motion": { "valid":true, "trans_px":0.42, "rot_deg":0.0,
+//               "confidence":0.87, "ref":"previous" }
+//
+// valid==false means motion was not measured for this frame (feature disabled,
+// first frame of a stream, ROI too large for frame, etc.) — clients should
+// treat as "unknown", not "still".
+//
+// Thresholding is the client's responsibility; the server returns the raw
+// scalar so thresholds can be tuned without a server release.
+namespace MotionField {
+    constexpr const char* OBJECT     = "motion";
+    constexpr const char* VALID      = "valid";
+    constexpr const char* TRANS_PX   = "trans_px";    // translation magnitude, pixels
+    constexpr const char* ROT_DEG    = "rot_deg";     // reserved, 0 for phase correlation
+    constexpr const char* CONFIDENCE = "confidence";  // phase correlation peak response
+    constexpr const char* REFERENCE  = "ref";
+}
+
+namespace MotionReference {
+    constexpr const char* PREVIOUS = "previous";  // measure against previous frame's ROI
+    constexpr const char* ANCHOR   = "anchor";    // measure against first-frame ROI of stream
 }
 
 // ============================================================================

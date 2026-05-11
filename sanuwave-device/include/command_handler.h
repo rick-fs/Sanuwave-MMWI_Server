@@ -24,8 +24,11 @@
 #include "LedMgr.h"
 #include "vd6283tx_wrapper.h"
 #include "lsm6ds3trc_wrapper.h"
+#include "stream_context.h"   // exports StreamFrameCallback + StreamContext
+
 namespace sanuwave
 {
+
 
 class AS7331Wrapper;
 
@@ -50,9 +53,7 @@ public:
 
     std::string handleCommand(const std::string& jsonCommand);
 
-    void setStreamFrameCallback(
-        std::function<void(const std::vector<uint8_t>&, const std::string&,
-                           const std::string&, int, int, uint64_t)> callback);
+    void setStreamFrameCallback(StreamFrameCallback callback);
     void setStreamStopCallback(std::function<void()> callback)
     {
         streamStopCallback = callback;
@@ -299,13 +300,17 @@ private:
     uint64_t latestThermalTimestamp = 0;
     bool     frameReady             = false;
     std::atomic<bool> uvbfActive{false};
-    std::function<void(const std::vector<uint8_t>&, const std::string&,
-                      const std::string&, int, int, uint64_t)> streamCallback;
+    StreamFrameCallback                                         streamCallback;
     std::function<void()>                                       streamStopCallback{nullptr};
     std::function<void(const std::string&, const uint8_t*, size_t)> diagFrameCallback;
 
     std::function<void(const std::string&)>                         notifyCallback;
     std::function<void(const std::string&, const uint8_t*, size_t)> sendDngCallback;
+
+    // Motion-measurement config staged by handleStreamStart and consumed
+    // by the next start*Stream invocation. Per-call transient; not used
+    // across streams. Defaults to disabled.
+    StreamContext::MotionConfig pendingMotion_;
 };
 
 } // namespace sanuwave

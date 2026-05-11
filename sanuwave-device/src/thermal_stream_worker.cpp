@@ -3,6 +3,7 @@
 #include "thermal_camera.h"
 #include "ijpeg_encoder.h"
 #include "logger.h"
+#include "stream_frame_meta.h"
 #include <chrono>
 #include <thread>
 #include <opencv2/core.hpp>
@@ -44,8 +45,18 @@ void thermalStreamWorker(ThermalCamera* camera, StreamContext ctx, int captureSc
             uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
                               now.time_since_epoch())
                               .count();
-            ctx.callback(encoded, ctx.modality, ctx.format,
-                         frame.cols, frame.rows, ts);
+
+            StreamFrameMeta meta;
+            meta.modality     = ctx.modality;
+            meta.format       = ctx.format;
+            meta.width        = frame.cols;   // actual frame size, not ctx
+            meta.height       = frame.rows;
+            meta.timestamp_ms = ts;
+            // motion left default (valid==false): thermal does not
+            // measure motion. ctx.motion.enabled is also false on this
+            // path (see command_handler start*Stream).
+
+            ctx.callback(encoded, meta);
         }
         auto t3 = std::chrono::steady_clock::now();
 

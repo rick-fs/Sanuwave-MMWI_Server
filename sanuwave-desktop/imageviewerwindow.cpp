@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QFormLayout>
 #include <QPushButton>
+#include <QEvent>
 #include "logger.h"
 #include "dng_exporter.h" 
 
@@ -93,7 +94,21 @@ void ImageViewerWindow::setupUI()
     
     scrollArea->setWidget(imageWidget);
     mainLayout->addWidget(scrollArea);
-    
+
+    // Motion overlay badge: parented to the scroll-area viewport so it
+    // stays pinned to the visible region regardless of scroll position.
+    // Hidden until MainWindow pushes a Still/Moving state via
+    // setMotionState(). An event filter on the viewport keeps the badge
+    // anchored to the top-right corner across resizes.
+    motionBadge_ = new QLabel(scrollArea->viewport());
+    motionBadge_->setObjectName("motionBadge");
+    motionBadge_->setAlignment(Qt::AlignCenter);
+    motionBadge_->setFixedSize(96, 28);
+    motionBadge_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    motionBadge_->hide();
+    scrollArea->viewport()->installEventFilter(this);
+    positionMotionBadge();
+
     toolbar = new QToolBar("Image Tools");
     toolbar->setMovable(false);
     addToolBar(Qt::TopToolBarArea, toolbar);
@@ -686,4 +701,75 @@ QImage ImageViewerWindow::applyRotation(const QImage& image) const
     if (!rotation180 || image.isNull())
         return image;
     return image.transformed(QTransform().rotate(180));
+}
+
+// ---------------------------------------------------------------------------
+// Motion overlay badge
+//
+// The badge floats over the top-right of the scroll-area viewport. State is
+// driven by MainWindow via setMotionState(); Unknown hides the badge,
+// Still/Moving show a colored pill with text. Positioning is recomputed on
+// every viewport resize via eventFilter().
+// ---------------------------------------------------------------------------
+void ImageViewerWindow::setMotionState(MotionBadge state)
+{
+    motionBadgeState_ = state;
+    if (!motionBadge_)
+        return;
+
+    switch (state)
+    {
+    case MotionBadge::Still:
+        motionBadge_->setText(tr("STILL"));
+        motionBadge_->setStyleSheet(
+            "QLabel#motionBadge {"
+            "  background-color: rgba(20, 120, 40, 220);"
+            "  color: white;"
+            "  border-radius: 6px;"
+            "  font-weight: bold;"
+            "  font-size: 11pt;"
+            "}");
+        motionBadge_->show();
+        break;
+
+    case MotionBadge::Moving:
+        motionBadge_->setText(tr("MOVING"));
+        motionBadge_->setStyleSheet(
+            "QLabel#motionBadge {"
+            "  background-color: rgba(190, 60, 40, 230);"
+            "  color: white;"
+            "  border-radius: 6px;"
+            "  font-weight: bold;"
+            "  font-size: 11pt;"
+            "}");
+        motionBadge_->show();
+        break;
+
+    case MotionBadge::Unknown:
+    default:
+        motionBadge_->hide();
+        return;   // no need to reposition a hidden widget
+    }
+
+    motionBadge_->raise();
+    positionMotionBadge();
+}
+
+void ImageViewerWindow::positionMotionBadge()
+{
+    if (!motionBadge_ || !scrollArea || !scrollArea->viewport())
+        return;
+
+    const int margin = 8;
+    QWidget* vp = scrollArea->viewport();
+    int x = vp->width()  - motionBadge_->width()  - margin;
+    int y = margin;
+    motionBadge_->move(x, y);
+}
+
+bool ImageViewerWindow::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (obj == scrollArea->viewport() && ev->type() == QEvent::Resize)
+        positionMotionBadge();
+    return QMainWindow::eventFilter(obj, ev);
 }

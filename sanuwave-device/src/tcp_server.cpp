@@ -1,10 +1,13 @@
 // src/tcp_server.cpp
 #include "tcp_server.h"
 #include "logger.h"
+#include "stream_frame_meta.h"
+#include "protocol_constants.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <sstream>
@@ -282,20 +285,51 @@ void TCPServer::frameSenderLoop()
 void TCPServer::sendFrameToClients(const FramePacket& frame)
 {
     std::lock_guard<std::mutex> lock(clientMutex);
-    
+
     if (clientSockets.empty())
         return;
-    
+
+    const auto& m = frame.meta;
+    namespace P = sanuwave::protocol;
+
     std::ostringstream header;
-    header << R"({"type":"stream_frame",)"
-           << R"("modality":")" << frame.modality << R"(",)"
-           << R"("format":")" << frame.format << R"(",)"
-           << R"("width":)" << frame.width << ","
-           << R"("height":)" << frame.height << ","
-           << R"("timestamp_ms":)" << frame.timestamp_ms << ","
-           << R"("size":)" << frame.data.size() << "}\n";
+    // Fixed precision so floats serialise without surprises (default
+    // precision is only 6 significant digits; not enough for stable
+    // motion display). Applies only to this stream.
+    header.precision(6);
+    header << std::fixed;
+
+    header << R"({"type":")" << P::ResponseType::STREAM_FRAME << R"(",)"
+           << R"("modality":")" << m.modality << R"(",)"
+           << R"("format":")"   << m.format   << R"(",)"
+           << R"("width":)"        << m.width        << ","
+           << R"("height":)"       << m.height       << ","
+           << R"("timestamp_ms":)" << m.timestamp_ms << ","
+           << R"("size":)"         << frame.data.size();
+
+    // Motion sub-object is emitted only when valid and all numeric fields
+    // are finite (NaN/Inf would produce invalid JSON). Unaware clients see
+    // the same wire shape as before; aware clients parse it via
+    // MotionField keys.
+    const bool motionEmit =
+        m.motion.valid &&
+        std::isfinite(m.motion.trans_px) &&
+        std::isfinite(m.motion.rot_deg)  &&
+        std::isfinite(m.motion.confidence);
+
+    if (motionEmit)
+    {
+        header << R"(,")" << P::MotionField::OBJECT << R"(":{)"
+               << R"(")" << P::MotionField::VALID      << R"(":true,)"
+               << R"(")" << P::MotionField::TRANS_PX   << R"(":)" << m.motion.trans_px   << ","
+               << R"(")" << P::MotionField::ROT_DEG    << R"(":)" << m.motion.rot_deg    << ","
+               << R"(")" << P::MotionField::CONFIDENCE << R"(":)" << m.motion.confidence << ","
+               << R"(")" << P::MotionField::REFERENCE  << R"(":")" << m.motion.reference << R"("})";
+    }
+
+    header << "}\n";
     std::string headerStr = header.str();
-    
+
     auto it = clientSockets.begin();
     while (it != clientSockets.end())
     {
@@ -344,24 +378,22 @@ void TCPServer::sendFrameToClients(const FramePacket& frame)
     }
 }
 
-void TCPServer::broadcastStreamFrame(const std::vector<uint8_t>& frameData, 
-                                      const std::string& modality,
-                                      const std::string& format,
-                                      int width, int height, uint64_t timestamp_ms)
+void TCPServer::broadcastStreamFrame(const std::vector<uint8_t>& frameData,
+                                     const sanuwave::StreamFrameMeta& meta)
 {
     if (frameData.empty())
         return;
-    
+
     std::lock_guard<std::mutex> lock(frameQueueMutex);
-    
+
     // Drop frames if queue is backing up
     if (frameQueue.size() >= MAX_FRAME_QUEUE_SIZE)
     {
         LOG_DEBUG << "Frame queue full, dropping frame" << std::endl;
         return;
     }
-    
-    frameQueue.push({frameData, modality, format, width, height, timestamp_ms});
+
+    frameQueue.push(FramePacket{frameData, meta});
     frameQueueCV.notify_one();
 }
 

@@ -194,6 +194,8 @@ set(SOURCES
     settingsdialog.cpp
     aboutdialog.cpp
     calibration_viewer_dialog.cpp
+    # Motion
+    motion_settings_dialog.cpp 
     # Network
     server_connection.cpp
     # UI Widgets
@@ -202,6 +204,7 @@ set(SOURCES
     imagedisplaywidget.cpp
     cameratestpanel.cpp
     cameratestrunner.cpp
+    motion_chart_widget.cpp 
     # Image processing
     image_decoding.cpp
     turbo_jpeg_decoding.cpp
@@ -235,6 +238,8 @@ set(HEADERS
     version.h
     aboutdialog.h
     calibration_viewer_dialog.h
+    # Motion
+    motion_settings_dialog.h 
     # Network
     server_connection.h
     # UI Widgets
@@ -243,6 +248,7 @@ set(HEADERS
     imagedisplaywidget.h
     cameratestpanel.h
     cameratestrunner.h
+    motion_chart_widget.h 
     # Image processing
     image_decoding.h
     turbo_jpeg_decoding.h
