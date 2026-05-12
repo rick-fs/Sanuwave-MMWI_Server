@@ -205,6 +205,7 @@ set(SOURCES
     cameratestpanel.cpp
     cameratestrunner.cpp
     motion_chart_widget.cpp 
+    zoom_image_widget.cpp 
     # Image processing
     image_decoding.cpp
     turbo_jpeg_decoding.cpp
@@ -225,7 +226,6 @@ set(SOURCES
     # Session management
     session_manager.cpp
     # UVBF 
-    uvbf_capture_dialog.cpp
     uvbf_vblank_dialog.cpp
     imu_config_dialog.cpp 
 )
@@ -249,6 +249,7 @@ set(HEADERS
     cameratestpanel.h
     cameratestrunner.h
     motion_chart_widget.h 
+    zoom_image_widget.h 
     # Image processing
     image_decoding.h
     turbo_jpeg_decoding.h
@@ -269,7 +270,6 @@ set(HEADERS
     # Session management
     session_manager.h
     # UVBF
-    uvbf_capture_dialog.h
     median_wirth.h
     uvbf_vblank_dialog.h
     imu_config_dialog.h 

@@ -67,8 +67,8 @@ namespace Command {
     #ifdef UNUSED_DELETE
     constexpr const char* SET_CAPTURE_MODE = "set_capture_mode";
     constexpr const char* FRAME_TRANSFER   = "frame_transfer";
-    #endif
     constexpr const char* UVBF_CAPTURE = "uvbf_capture";
+    #endif
     constexpr const char* UVBF_VBLANK_CAPTURE = "uvbf_vblank_capture";
     constexpr const char* UVBF_VBLANK_COMPLETE = "uvbf_vblank_complete";
     // Distance Sensor (VL53L4CD)
@@ -263,7 +263,9 @@ namespace Param {
     constexpr const char* TEMPERATURE_AGE_S    = "age_seconds";
 
     // Capture mode
+    #ifdef UNUSED_DELETE
     constexpr const char* CAPTURE_MODE = "capture_mode";  // value: CaptureMode::STANDARD | CaptureMode::UVBF
+    #endif
 
     // Frame transfer
     constexpr const char* FRAME_ROLE    = "frame_role";    // value: FrameRole::BACKGROUND | FrameRole::UV
@@ -437,12 +439,20 @@ namespace ResponseType {
     constexpr const char* ALS_DATA           = "als_data";
     constexpr const char* SENSOR_TIMING      = "sensor_timing";
     constexpr const char* SENSOR_TEMPERATURE = "sensor_temperature";
+    #ifdef UNUSED_DELETE
     constexpr const char* CAPTURE_MODE_ACK   = "set_capture_mode_ack";
+    #endif
     constexpr const char* FRAME_TRANSFER     = "frame_transfer";
     constexpr const char* AMBIENT_LIGHT_WARN = "ambient_light_warning";
+    // TODO: Capture-only — server no longer emits this after UVBF Capture
+    // removal. Dispatch in server_connection.cpp still references the constant,
+    // so it stays defined until that dispatch branch is pruned.
+    constexpr const char* UVBF_COMPLETE       = "uvbf_complete";
+    // Shared envelopes — server sends these for both UVBF Capture and
+    // VBlank Timing runs; the receiver branches on the "mode" field.
+    // Kept after Capture removal because VBlank still uses them.
     constexpr const char* UVBF_STARTED        = "uvbf_started";
     constexpr const char* UVBF_FRAME_CAPTURED = "uvbf_frame_captured";
-    constexpr const char* UVBF_COMPLETE       = "uvbf_complete";
     constexpr const char* UVBF_VBLANK_COMPLETE = "uvbf_vblank_complete";
     constexpr const char* UVBF_ERROR          = "uvbf_error";
 
@@ -452,6 +462,8 @@ namespace ResponseType {
     constexpr const char* IMU_REG             = "imu_reg";    // debug register read result
 }
 
+// Shared parameter keys — originally introduced for UVBF Capture, but VBlank
+// Timing aliases this namespace too. Kept after Capture removal.
 namespace UVBFParam {
     constexpr const char* CAMERA           = "uvbf_camera";
     constexpr const char* EXPOSURE_US      = "uvbf_exposure_us";

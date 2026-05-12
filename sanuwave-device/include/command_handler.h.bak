@@ -92,7 +92,9 @@ private:
     // -----------------------------------------------------------------------
     std::string handleCaptureIMX708      (const std::map<std::string, std::string>& p);
     std::string handleCaptureRaw         (const std::map<std::string, std::string>& p);
+    std::string handleUVBFCapture(const std::map<std::string, std::string> &params);
     bool uvbfArmLeds(const std::vector<int> &ledIds, uint8_t brightness);
+    void uvbfDisarmLeds(const std::vector<int> &ledIds);
     std::string handleCaptureThermal(const std::map<std::string, std::string> &p);
     std::string handleCaptureIMX219Custom(const std::map<std::string, std::string>& p);
 #ifdef DELETEME

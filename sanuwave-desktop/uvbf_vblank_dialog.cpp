@@ -39,9 +39,10 @@
 #include <QVBoxLayout>
 
 #include <QtConcurrent/QtConcurrent>
-
+#include "server_connection.h"
 #include "dng_exporter.h"
 #include "raw_bayer_decoding.h"
+#include "zoom_image_widget.h"
 #include "logger.h"
 
 #include <cmath>

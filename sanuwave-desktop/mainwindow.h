@@ -45,7 +45,6 @@ class MotionSettingsDialog;
 #include "camera_settings_manager.h"
 #include "raw_diag_window.h"
 #include "stream_frame_decoder.h"
-#include "uvbf_capture_dialog.h"          
 #include <optional>
 #include "session_manager.h"
 class UVBFVBlankDialog;
@@ -154,15 +153,7 @@ private slots:
   
     void onSettingsLoaded();
 
-    // ---- UVBF ----                                               
-    void onUVBFCaptureTriggered();                                  
-    void onUVBFCaptureModeAck(const QJsonObject& response);        
-    void onUVBFFrameTransferProgress(const QJsonObject& envelope,  
-                                      int bytesReceived);           
-    void onUVBFFrameTransferComplete(const QJsonObject& envelope,   
-                                      const QByteArray& dngData);   
-    void onUVBFCaptureAccepted(const UVBFSession& session);
-
+    // ---- UVBF ----
     void onUVBFVBlankTriggered();
 
  
@@ -241,9 +232,6 @@ private:
     void autoSaveIntervalFrame(const QByteArray& frameData, const QString& modality);
     void tryFinalizeFrame();
 
-    // ---- UVBF helpers ----                                        // << ADDED
-    void forwardSensorStatusToUVBF(const QJsonObject& statusResponse); // << ADDED
-
 
     void updateFrameDurationTimingHints();
     double activeStreamingRollingShutter_ms() const;
@@ -258,7 +246,6 @@ private:
     // Capture buttons
     QPushButton* threeDButton;
     QPushButton* singleCaptureButton;
-    QPushButton* uvbfCaptureButton = nullptr;                       
     QPushButton* uvbfVBlankButton = nullptr;
 
     // Stream controls
@@ -582,9 +569,8 @@ private:
     int64_t naturalFrameDurationMax_us = 0;
     bool versionChecked = false;
 
-    // ---- UVBF ----                                               
-    UVBFCaptureDialog* uvbfDialog = nullptr;   
-    QPointer<UVBFVBlankDialog> vblankDialog;       
+    // ---- UVBF ----
+    QPointer<UVBFVBlankDialog> vblankDialog;
     
     // Last-applied configure-dialog payload (sent on every imu_start so a
     // fresh session uses the user's last-saved settings; persists across

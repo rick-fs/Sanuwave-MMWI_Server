@@ -12,7 +12,6 @@
 //
 // ============================================================================
 
-#include "uvbf_capture_dialog.h"   // UVBFFrameInfo, UVBFParam, ZoomImageWidget
 
 #include <QDialog>
 #include <QJsonObject>
@@ -20,7 +19,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
-
+#include "raw_bayer_decoding.h"   // sanuwave::RawImageInfo
+#include "uvbf_frame_info.h"
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
@@ -32,7 +32,8 @@ class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
 class ServerConnection;
-
+class ZoomImageWidget;
+ 
 // ---------------------------------------------------------------------------
 // Per-frame timing record populated from uvbf_vblank_complete
 // ---------------------------------------------------------------------------

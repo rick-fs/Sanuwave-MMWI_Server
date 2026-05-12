@@ -35,7 +35,6 @@
 #include "motion_chart_widget.h"
 #include "motion_settings_dialog.h"
 
-#include "uvbf_capture_dialog.h"
 #include "uvbf_vblank_dialog.h"
 #include "imu_config_dialog.h"
 
@@ -2024,7 +2023,7 @@ ExpandableGroupBox *MainWindow::setUpImuGroup(QWidget *parent)
     // The dialog has many settings (ODR, FS, FIFO, tap, free-fall, wake,
     // routing, frame). Keeping them out of the inline group keeps the
     // main panel scannable. Mirrors the "open dialog for advanced
-    // settings" pattern used by Settings / Calibration / UVBF Capture.
+    // settings" pattern used by Settings / Calibration.
     QHBoxLayout *configRow = new QHBoxLayout();
     configRow->addStretch();
     imuConfigureButton = new QPushButton("⚙ Configure...");
@@ -2403,18 +2402,11 @@ void MainWindow::setupUI()
     scrollLayout->addWidget(alsGroup);
 
 
-    // ── UVBF Capture ──────────────────────────────────────────────────────────
-    ExpandableGroupBox *uvbfGroup = new ExpandableGroupBox("🔬 UV Fluorescence Capture", this);
+    // ── UVBF VBlank Timing ────────────────────────────────────────────────────
+    ExpandableGroupBox *uvbfGroup = new ExpandableGroupBox("⏱ UV Fluorescence VBlank Timing", this);
     uvbfGroup->setExpanded(true);
         QHBoxLayout *uvbfLayout = new QHBoxLayout(uvbfGroup->getContentWidget());
- 
-    uvbfCaptureButton = new QPushButton("🔬 Start UVBF Capture…");
-    uvbfCaptureButton->setMinimumHeight(50);
-    uvbfCaptureButton->setEnabled(false);   // enabled in updateConnectionStatus()
-    connect(uvbfCaptureButton, &QPushButton::clicked,
-            this, &MainWindow::onUVBFCaptureTriggered);
-    uvbfLayout->addWidget(uvbfCaptureButton);
- 
+
     uvbfVBlankButton = new QPushButton("⏱ VBlank Timing…");
     uvbfVBlankButton->setMinimumHeight(50);
     uvbfVBlankButton->setEnabled(false);    // enabled in updateConnectionStatus()
@@ -2760,10 +2752,6 @@ void MainWindow::onServerDisconnected()
     addLog("✗ Disconnected from server", "error");
     updateConnectionStatus(false);
 
-    // Close UVBF dialog if open
-    if (uvbfDialog)
-        uvbfDialog->reject();   // triggers finished() → deleteLater + nullptr
- 
     // Close VBlank timing dialog if open
     if (vblankDialog)
         vblankDialog->reject();
@@ -3247,7 +3235,6 @@ void MainWindow::onDistanceDataReceived(const QJsonObject &data)
     }
 
     displayDistanceData(data);
-    forwardSensorStatusToUVBF(data); 
     if (lensCalibDialog)
     {
         float mm = static_cast<float>(data[sanuwave::protocol::DistanceField::DISTANCE_MM].toDouble());
@@ -3263,13 +3250,6 @@ void MainWindow::onUVDataReceived(const QJsonObject &data)
 void MainWindow::onALSDataReceived(const QJsonObject &data)
 {
     displayALSData(data);
-
-    if (uvbfDialog && data["valid"].toBool())
-    {
-        uint32_t clear     = static_cast<uint32_t>(data["clear"].toInt());
-        float exposureMs   = static_cast<float>(alsExposureSpinBox->value());
-        uvbfDialog->onALSData(clear, exposureMs);
-    }
 }
 
 void MainWindow::onLedTorch()
@@ -3765,27 +3745,11 @@ void MainWindow::onStatusReceived(const QString &message, const QJsonObject &res
         if (response[sanuwave::protocol::Device::ALS_SENSOR].toBool())         devices << "ALS";
         if (response[sanuwave::protocol::Device::LED_MANAGER].toBool())        devices << "LEDs";
         addLog(QString("✔ Server status: %1").arg(devices.join(", ")), "success");
-
-        // Forward sensor data to UVBF dialog if open
-        forwardSensorStatusToUVBF(response);
     }
     else if (!message.isEmpty())
     {
         addLog(QString("✔ Status: %1").arg(message), "success");
     }
-
-    // ── UVBF response routing ─────────────────────────────────────────────────
-    const QString responseType = response["type"].toString();
-
-    if (responseType == sanuwave::protocol::ResponseType::CAPTURE_MODE_ACK) {
-        onUVBFCaptureModeAck(response);
-        return;
-    }
-
-    // FRAME_TRANSFER binary payload is handled by ServerConnection directly;
-    // the JSON envelope arrives here only as a metadata notification.
-    // onUVBFFrameTransferProgress / onUVBFFrameTransferComplete are called
-    // from the ServerConnection binary receive path.
 
     // ── Version check (runs once per connection) ─────────────────────────────
     if (!versionChecked && response.contains(sanuwave::protocol::VersionField::KEY_GIT_HASH))
@@ -4283,7 +4247,6 @@ void MainWindow::updateConnectionStatus(bool connected)
         statusLabel->setText("🟢 Connected");
         connectButton->setEnabled(false);
         disconnectButton->setEnabled(true);
-        uvbfCaptureButton->setEnabled(true);
         if (uvbfVBlankButton) uvbfVBlankButton->setEnabled(true);
     }
     else
@@ -4291,7 +4254,6 @@ void MainWindow::updateConnectionStatus(bool connected)
         statusLabel->setText("⚫ Disconnected");
         connectButton->setEnabled(true);
         disconnectButton->setEnabled(false);
-        uvbfCaptureButton->setEnabled(false);
         if (uvbfVBlankButton) uvbfVBlankButton->setEnabled(false);
     }
 }
@@ -5220,143 +5182,6 @@ void MainWindow::restoreWindowGeometry()
     {
         resize(1500, 950);
     }
-}
-
-void MainWindow::onUVBFCaptureTriggered()
-{
-    if (uvbfDialog) {
-        uvbfDialog->raise();
-        uvbfDialog->activateWindow();
-        return;
-    }
-
-    if (streamingActive)
-        onStreamStop();
-
-    uvbfDialog = new UVBFCaptureDialog(serverConnection, distanceStreaming, this);
-
-    connect(uvbfDialog, &UVBFCaptureDialog::captureAccepted,
-            this, &MainWindow::onUVBFCaptureAccepted);
-
-    connect(serverConnection, &ServerConnection::uvbfStarted,
-        uvbfDialog, [this]() {
-            if (uvbfDialog) uvbfDialog->onUVBFStarted();
-        });
-
-    connect(serverConnection, &ServerConnection::uvbfFrameCaptured,
-        uvbfDialog, [this](const QString& role) {
-            if (uvbfDialog) uvbfDialog->onUVBFFrameCaptured(role);
-        });
-
-    connect(serverConnection, &ServerConnection::uvbfError,
-        uvbfDialog, [this](const QString& stage, const QString& reason) {
-            if (uvbfDialog) uvbfDialog->onUVBFError(stage, reason);
-        });
-
-    connect(serverConnection, &ServerConnection::uvbfFrameTransferProgress,
-        uvbfDialog, [this](const QString& role, int rx, int total) {
-            if (uvbfDialog) uvbfDialog->onFrameTransferProgress(role, rx, total);
-        });
-
-    connect(serverConnection, &ServerConnection::uvbfFrameTransferComplete,
-        uvbfDialog, [this](const UVBFFrameInfo& frameInfo, const QByteArray& data) {
-            if (uvbfDialog) uvbfDialog->onFrameTransferComplete(frameInfo, data);
-        });
-
-    connect(uvbfDialog, &QDialog::finished, this, [this]() {
-        // Disconnect all ServerConnection → uvbfDialog forwarding connections
-        // so they don't fire after the dialog is destroyed.
-        serverConnection->disconnect(uvbfDialog);
-        uvbfDialog->deleteLater();
-        uvbfDialog = nullptr;
-    });
-
-    uvbfDialog->show();
-}
-
-
-void MainWindow::forwardSensorStatusToUVBF(const QJsonObject& response)
-{
-    if (!uvbfDialog)
-        return;
-
-    float distanceMm = response.contains(sanuwave::protocol::DistanceField::DISTANCE_MM)
-        ? static_cast<float>(response[sanuwave::protocol::DistanceField::DISTANCE_MM].toDouble())
-        : static_cast<float>(lastDistanceMm);
-
-    float ambientUv = 0.f;
-    if (response.contains("uv_irradiance"))
-        ambientUv = static_cast<float>(response["uv_irradiance"].toDouble());
-
-    float motionScore = 0.f;
-
-    uvbfDialog->onSensorStatus(distanceMm, ambientUv, motionScore);
-}
-
-
-void MainWindow::onUVBFCaptureModeAck(const QJsonObject& response)
-{
-    if (!uvbfDialog)
-        return;
-
-    bool success = response["success"].toBool(false);
-    QString err  = response["message"].toString();
-    uvbfDialog->onCaptureModeAck(success, err);
-}
-
-// ============================================================================
-// NEW FUNCTION
-// ============================================================================
-
-void MainWindow::onUVBFFrameTransferProgress(const QJsonObject& envelope,
-                                              int bytesReceived)
-{
-    if (!uvbfDialog)
-        return;
-
-    QString role = envelope[Param::FRAME_ROLE].toString();
-    int total    = envelope[Param::PAYLOAD_SIZE].toInt(1);
-    uvbfDialog->onFrameTransferProgress(role, bytesReceived, total);
-}
-
-
-void MainWindow::onUVBFFrameTransferComplete(const QJsonObject& envelope,
-                                              const QByteArray& dngData)
-{
-    if (!uvbfDialog)
-        return;
-
-    UVBFFrameInfo frameInfo;
-    frameInfo.role      = envelope[Param::FRAME_ROLE].toString();
-    frameInfo.sessionId = envelope[Param::SESSION_ID].toString();
-    frameInfo.camera    = envelope[Param::CAMERA].toString();
-
-    sanuwave::RawImageInfo& img = frameInfo.imageInfo;
-    img.width       = envelope["width"].toInt();
-    img.height      = envelope["height"].toInt();
-    img.bitDepth    = envelope["bit_depth"].toInt(10);
-    img.storageBits = 16;
-    img.blackLevel  = envelope["black_level"].toInt(4096);
-    img.pattern     = sanuwave::RawBayerDecoder::patternFromString(
-                          envelope["bayer_pattern"].toString("BGGR").toStdString());
-    img.exposureUs  = envelope["exposure_us"].toInt(0);
-
-    uvbfDialog->onFrameTransferComplete(frameInfo, dngData);
-}
-
-
-void MainWindow::onUVBFCaptureAccepted(const UVBFSession& session)
-{
-    addLog(QString("UVBF capture accepted — session %1 | "
-                   "dark1: %2 bytes  illum1: %3 bytes  illum2: %4 bytes  dark2: %5 bytes")
-               .arg(session.sessionId)
-               .arg(session.dark1Dng.size())
-               .arg(session.illum1Dng.size())
-               .arg(session.illum2Dng.size())
-               .arg(session.dark2Dng.size()),
-           "info");
-
-    // TODO: sessionManager->saveUVBFSession(session);
 }
 
 void MainWindow::onUVBFVBlankTriggered()
