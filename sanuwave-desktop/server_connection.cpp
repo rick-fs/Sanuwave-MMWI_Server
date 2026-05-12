@@ -623,6 +623,24 @@ void ServerConnection::processJsonResponse(const QJsonObject &response)
         m_currentUVBFFrameInfo.ledOffTimestamp_ms =
             static_cast<uint64_t>(response["led_off_timestamp_ms"].toDouble());
 
+        // Optional motion sub-object — present only on illum frames at
+        // illum-sequence index k >= 2, and only when the server-side
+        // motion check was enabled for this capture. Absent → motion
+        // stays default (valid=false).
+        {
+            namespace UM = sanuwave::protocol::UvbfMotionField;
+            if (response.contains(UM::OBJECT))
+            {
+                QJsonObject mo = response[UM::OBJECT].toObject();
+                auto& m = m_currentUVBFFrameInfo.motion;
+                m.valid            = mo[UM::VALID].toBool(false);
+                m.prevTransPx      = mo[UM::PREV_TRANS_PX].toDouble(0.0);
+                m.prevConfidence   = mo[UM::PREV_CONFIDENCE].toDouble(0.0);
+                m.anchorTransPx    = mo[UM::ANCHOR_TRANS_PX].toDouble(0.0);
+                m.anchorConfidence = mo[UM::ANCHOR_CONFIDENCE].toDouble(0.0);
+            }
+        }
+
         m_expectedUVBFFrameSize = static_cast<int>(response[protocol::Param::PAYLOAD_SIZE].toDouble());
         m_receivingUVBFFrame    = true;
 

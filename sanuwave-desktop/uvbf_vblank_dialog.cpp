@@ -212,6 +212,20 @@ QWidget* UVBFVBlankDialog::buildConfigPage()
            "strobe interface.  Falls back to userspace if sysfs not found."));
     ledForm->addRow("", kernelStrobeCheck);
 
+    // Quality check: server-side phase correlation between the illum
+    // frames of the burst. Measures device drift across the capture;
+    // results appear in the Results table's "Drift" columns and as a
+    // PASS/FAIL banner. Off by default; persisted via QSettings.
+    motionCheckCheck = new QCheckBox(tr("Measure inter-frame motion (quality check)"));
+    motionCheckCheck->setToolTip(
+        tr("Server runs phase correlation between all illuminated frames\n"
+           "in the burst and reports drift per illum frame. Adds ~3 ms\n"
+           "per pair on the Pi 5 - tens of ms total for a 9-illum burst,\n"
+           "negligible vs transfer time. All work happens AFTER the burst\n"
+           "completes, so it does NOT impact the 400 ms LED-flash-timeout\n"
+           "budget."));
+    ledForm->addRow("", motionCheckCheck);
+
     ledLayout->addLayout(ledForm);
 
     // 4 × 8 LED checkbox grid
@@ -796,6 +810,19 @@ QWidget* UVBFVBlankDialog::buildResultsPage()
     summaryLabel->setWordWrap(true);
     layout->addWidget(summaryLabel);
 
+    // Motion verdict banner. Populated by populateMotionVerdict() from the
+    // collected per-frame motion data. Hidden when motion check was not
+    // requested for this capture, so the page looks unchanged from before
+    // for users who don't enable the feature.
+    motionVerdictLabel = new QLabel;
+    motionVerdictLabel->setWordWrap(true);
+    motionVerdictLabel->setAlignment(Qt::AlignCenter);
+    motionVerdictLabel->setStyleSheet(
+        "QLabel { padding: 8px; border-radius: 4px; "
+        "background-color: #ecf0f1; font-weight: bold; }");
+    motionVerdictLabel->hide();
+    layout->addWidget(motionVerdictLabel);
+
     auto* btnRow   = new QHBoxLayout;
     exportCsvButton = new QPushButton(tr("⬇ Export CSV…"));
     connect(exportCsvButton, &QPushButton::clicked,
@@ -924,6 +951,8 @@ void UVBFVBlankDialog::loadVBlankConfig()
         predictVBlankCheck->setChecked(s.value("predict_vblank", false).toBool());
     if (kernelStrobeCheck)
         kernelStrobeCheck->setChecked(s.value("kernel_strobe", false).toBool());
+    if (motionCheckCheck)
+        motionCheckCheck->setChecked(s.value("motion_check", false).toBool());
 
     for (int i = 0; i < 32; ++i) {
         if (ledCheckBoxes[i])
@@ -956,6 +985,7 @@ void UVBFVBlankDialog::saveVBlankConfig()
     if (brightnessSpinBox) s.setValue("led_brightness",  brightnessSpinBox->value());
     if (predictVBlankCheck) s.setValue("predict_vblank", predictVBlankCheck->isChecked());
     if (kernelStrobeCheck)  s.setValue("kernel_strobe",  kernelStrobeCheck->isChecked());
+    if (motionCheckCheck)   s.setValue("motion_check",   motionCheckCheck->isChecked());
 
     for (int i = 0; i < 32; ++i) {
         if (ledCheckBoxes[i])
@@ -1033,6 +1063,8 @@ void UVBFVBlankDialog::onStartClicked()
         cmd["predict_vblank"]    = true;
     if (kernelStrobeCheck && kernelStrobeCheck->isChecked())
         cmd["kernel_strobe"]     = true;
+    motionCheckRequested = motionCheckCheck && motionCheckCheck->isChecked();
+    cmd[Param::UVBF_MOTION_CHECK] = motionCheckRequested ? "true" : "false";
     connection->sendCommand(cmd);
 
     goToPage(1);
@@ -1067,6 +1099,7 @@ void UVBFVBlankDialog::onVBlankStarted(int frameCount, const QStringList& roles)
     tempFilePaths.clear();
     frameSaveDngButtons.clear();
     frameSavePngButtons.clear();
+    frameMotions.clear();
     pendingPreviews = 0;
     if (previewTabs) {
         while (previewTabs->count() > 0) {
@@ -1121,6 +1154,10 @@ void UVBFVBlankDialog::onFrameTransferComplete(const UVBFFrameInfo& frameInfo,
     }
     tempFilePaths[role] = path;
     frameInfos[role]    = frameInfo.imageInfo;
+    // Capture motion measurement if the server emitted one for this frame.
+    // motion.valid == false (default) when the sub-object was absent, so
+    // storing unconditionally is harmless and keeps the lookup uniform.
+    frameMotions[role]  = frameInfo.motion;
 
     ++framesReceived;
     transferBar->setValue(framesReceived);
@@ -1343,6 +1380,24 @@ void UVBFVBlankDialog::onVBlankComplete(const QJsonObject& summary)
     }
 
     goToPage(2);
+
+    // Fold per-frame motion data (collected via onFrameTransferComplete)
+    // into the timing frames before display. Map by role since the
+    // VBlank summary frames and the per-frame transfers arrive on
+    // different code paths but share role identifiers.
+    for (auto& f : frames)
+    {
+        auto it = frameMotions.find(f.role);
+        if (it == frameMotions.end()) continue;
+        const UVBFFrameInfo::Motion& m = it.value();
+        if (!m.valid) continue;
+        f.motionValid       = true;
+        f.prevTransPx       = m.prevTransPx;
+        f.prevConfidence    = m.prevConfidence;
+        f.anchorTransPx     = m.anchorTransPx;
+        f.anchorConfidence  = m.anchorConfidence;
+    }
+
     capturedFrames              = frames;
     capturedVBlankEstimate_us   = vblankEstimate_us;
     capturedRollingShutter_us   = rollingShutter_us;
@@ -1351,6 +1406,7 @@ void UVBFVBlankDialog::onVBlankComplete(const QJsonObject& summary)
     capturedPredictVBlank        = summary["predict_vblank"].toBool();
     capturedKernelStrobe         = summary["kernel_strobe"].toBool();
     populateTimingTable(frames, vblankEstimate_us, rollingShutter_us);
+    populateMotionVerdict(frames);
 
     if (timingChart && flashTimeout_ms > 0.0)
         timingChart->setStrobeDiagnostics(strobeEvents,
@@ -1458,8 +1514,10 @@ void UVBFVBlankDialog::populateTimingTable(
         double vblankEstimate_us,
         double rollingShutter_us)
 {
-    // Expand to 9 columns: add sensor_ts_rel_us and frame_dur_us
-    timingTable->setColumnCount(9);
+    // Expand to 11 columns: 9 timing columns + 2 motion-drift columns.
+    // Motion columns stay empty (no text) for frames that have no
+    // measurement (dark frames, illum_1, motion check disabled).
+    timingTable->setColumnCount(11);
     timingTable->setHorizontalHeaderLabels({
         tr("Frame"),
         tr("Role"),
@@ -1470,6 +1528,8 @@ void UVBFVBlankDialog::populateTimingTable(
         tr("Rolling Shutter (µs)"),
         tr("Frame Period (µs)"),
         tr("In VBlank?"),
+        tr("Drift prev (px)"),
+        tr("Drift anchor (px)"),
     });
 
     // Tooltips on column headers
@@ -1488,6 +1548,12 @@ void UVBFVBlankDialog::populateTimingTable(
            "This is the upper bound — the callback must fire before this."),
         tr("YES if the callback landed inside the VBlank window\n"
            "(Rolling Shutter ≤ Callback Delta < Frame Period)"),
+        tr("Phase-correlation drift from the PREVIOUS illum frame (px).\n"
+           "Inter-frame jitter. Blank for dark frames, illum_1, and when\n"
+           "motion check was disabled."),
+        tr("Phase-correlation drift from the FIRST illum frame (px).\n"
+           "Cumulative drift from the start of illumination. Blank for\n"
+           "dark frames, illum_1, and when motion check was disabled."),
     };
     for (int c = 0; c < tips.size(); ++c)
         timingTable->horizontalHeaderItem(c)->setToolTip(tips[c]);
@@ -1552,6 +1618,20 @@ void UVBFVBlankDialog::populateTimingTable(
         QFont font = vbItem->font();
         font.setBold(inVBlank);
         vbItem->setFont(font);
+
+        // Drift columns: empty unless server returned a valid motion
+        // measurement for this row. Two decimals matches the chart label
+        // format used in the streaming motion indicator.
+        if (f.motionValid)
+        {
+            cell(9,  QString::number(f.prevTransPx,   'f', 2), R);
+            cell(10, QString::number(f.anchorTransPx, 'f', 2), R);
+        }
+        else
+        {
+            cell(9,  QString(), R);
+            cell(10, QString(), R);
+        }
     }
 
     // ── Populate chart ────────────────────────────────────────────────────────
@@ -1596,6 +1676,136 @@ void UVBFVBlankDialog::populateTimingTable(
                 .arg(capturedFrames.isEmpty() ? 0 : frameInfos.value(capturedFrames[0].role).width)
                 .arg(capturedFrames.isEmpty() ? 0 : frameInfos.value(capturedFrames[0].role).height));
     }
+}
+
+// ============================================================================
+// populateMotionVerdict
+//
+// Render a PASS / MARGINAL / FAIL / INCONCLUSIVE banner based on the worst-
+// case drift across all illum frames in the burst. Thresholds are client-
+// side and tunable via QSettings under [motion]; defaults mirror those used
+// in the standard UVBF capture dialog so the operator has a consistent
+// frame of reference.
+//
+// Hidden entirely when motion check was not requested for this capture
+// (motionCheckRequested == false). When requested but the server returned
+// no valid measurements for any frame, shown as a neutral "not available"
+// banner so the operator knows the request was honored even if the data
+// wasn't usable.
+// ============================================================================
+
+void UVBFVBlankDialog::populateMotionVerdict(const QVector<VBlankFrameTiming>& frames)
+{
+    if (!motionVerdictLabel) return;
+
+    if (!motionCheckRequested)
+    {
+        motionVerdictLabel->hide();
+        return;
+    }
+
+    QSettings settings("Sanuwave", "SanuwaveClient");
+    const double maxDriftPx =
+        settings.value("motion/uvbfMaxDriftPx", 3.0).toDouble();
+    const double warnDriftPx =
+        settings.value("motion/uvbfWarnDriftPx", 1.5).toDouble();
+    const double minConf =
+        settings.value("motion/uvbfMinConfidence", 0.05).toDouble();
+
+    // Scan all rows for valid measurements. Worst-case across BOTH prev
+    // and anchor drives the verdict; anchor on the last illum captures
+    // cumulative drift while prev captures frame-to-frame jitter, and
+    // either failing is enough to flag the capture.
+    double worstDrift = 0.0;
+    bool   anyValid = false;
+    bool   anyLowConfidence = false;
+    int    validCount = 0;
+    for (const auto& f : frames) {
+        if (!f.motionValid) continue;
+        anyValid = true;
+        ++validCount;
+        worstDrift = std::max({worstDrift, f.prevTransPx, f.anchorTransPx});
+        if (f.prevConfidence < minConf || f.anchorConfidence < minConf)
+            anyLowConfidence = true;
+    }
+
+    if (!anyValid)
+    {
+        motionVerdictLabel->setText(tr(
+            "Motion check: <b>not available</b><br>"
+            "<span style='font-weight: normal; font-size: 10px;'>"
+            "Server did not return inter-frame motion measurements for any "
+            "frame in this capture."
+            "</span>"));
+        motionVerdictLabel->setStyleSheet(
+            "QLabel { padding: 8px; border-radius: 4px; "
+            "background-color: #ecf0f1; color: #555; }");
+        motionVerdictLabel->show();
+        return;
+    }
+
+    QString verdictText;
+    QString bgColor;
+    if (anyLowConfidence)
+    {
+        verdictText = tr(
+            "Motion check: <b>INCONCLUSIVE</b><br>"
+            "<span style='font-weight: normal; font-size: 10px;'>"
+            "Phase-correlation confidence was low on at least one frame "
+            "(scene may lack texture). Worst drift across %1 measured "
+            "frames: %2 px."
+            "</span>")
+            .arg(validCount)
+            .arg(worstDrift, 0, 'f', 2);
+        bgColor = "#f39c12";   // amber
+    }
+    else if (worstDrift >= maxDriftPx)
+    {
+        verdictText = tr(
+            "Motion check: <b>FAIL</b><br>"
+            "<span style='font-weight: normal; font-size: 10px;'>"
+            "Worst drift %1 px across %2 measured frames exceeds threshold "
+            "%3 px. Consider retaking the capture."
+            "</span>")
+            .arg(worstDrift, 0, 'f', 2)
+            .arg(validCount)
+            .arg(maxDriftPx, 0, 'f', 1);
+        bgColor = "#c0392b";   // red
+    }
+    else if (worstDrift >= warnDriftPx)
+    {
+        verdictText = tr(
+            "Motion check: <b>MARGINAL</b><br>"
+            "<span style='font-weight: normal; font-size: 10px;'>"
+            "Worst drift %1 px across %2 measured frames (warn ≥ %3 px, "
+            "fail ≥ %4 px)."
+            "</span>")
+            .arg(worstDrift, 0, 'f', 2)
+            .arg(validCount)
+            .arg(warnDriftPx, 0, 'f', 1)
+            .arg(maxDriftPx, 0, 'f', 1);
+        bgColor = "#f39c12";   // amber
+    }
+    else
+    {
+        verdictText = tr(
+            "Motion check: <b>PASS</b><br>"
+            "<span style='font-weight: normal; font-size: 10px;'>"
+            "Worst drift %1 px across %2 measured frames (well under "
+            "%3 px threshold)."
+            "</span>")
+            .arg(worstDrift, 0, 'f', 2)
+            .arg(validCount)
+            .arg(maxDriftPx, 0, 'f', 1);
+        bgColor = "#27ae60";   // green
+    }
+
+    motionVerdictLabel->setText(verdictText);
+    motionVerdictLabel->setStyleSheet(
+        QString("QLabel { padding: 8px; border-radius: 4px; "
+                "background-color: %1; color: white; font-weight: bold; }")
+            .arg(bgColor));
+    motionVerdictLabel->show();
 }
 
 // ============================================================================

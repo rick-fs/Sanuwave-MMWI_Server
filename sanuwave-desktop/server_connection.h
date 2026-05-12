@@ -87,6 +87,21 @@ struct UVBFFrameInfo
     uint64_t ledOffTimestamp_ms = 0;
     sanuwave::RawImageInfo imageInfo; // width, height, bitDepth, storageBits,
                                       // blackLevel, pattern, exposureUs
+
+    // Inter-frame motion measurements from UVBF burst phase correlation.
+    // Populated only for illum frames at illum-sequence index k >= 2,
+    // and only when the server-side motion check was enabled for this
+    // capture. valid==false means no motion sub-object was emitted by
+    // the server for this frame. Separate from StreamFrameInfo::Motion:
+    // streaming reports a single per-frame pair, UVBF reports two
+    // measurements (prev and anchor) per illum frame.
+    struct Motion {
+        bool   valid             = false;
+        double prevTransPx       = 0.0;   // motion since previous illum frame
+        double prevConfidence    = 0.0;
+        double anchorTransPx     = 0.0;   // motion since illum1 (the anchor)
+        double anchorConfidence  = 0.0;
+    } motion;
 };
 
 class ServerConnection : public QObject

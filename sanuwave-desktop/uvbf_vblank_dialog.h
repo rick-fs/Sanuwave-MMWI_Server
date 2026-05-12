@@ -43,6 +43,15 @@ struct VBlankFrameTiming
     qint64   sensorTs_ns      = 0;
     double   callbackDelta_us = 0.0;
     double   frameDur_us      = 0.0;   // libcamera FrameDuration = actual frame period
+
+    // Motion measurement, populated for illum frames at illum-sequence
+    // index k >= 2 when the server-side motion check was enabled.
+    // motionValid==false means no measurement is available for this row.
+    bool   motionValid       = false;
+    double prevTransPx       = 0.0;
+    double prevConfidence    = 0.0;
+    double anchorTransPx     = 0.0;
+    double anchorConfidence  = 0.0;
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +98,7 @@ private:
     void populateTimingTable(const QVector<VBlankFrameTiming>& frames,
                              double vblankEstimate_us,
                              double rollingShutter_us);
+    void populateMotionVerdict(const QVector<VBlankFrameTiming>& frames);
 
     static QString    tempFilePathForRole(const QString& sessionId,
                                           const QString& role);
@@ -116,6 +126,7 @@ private:
     QSpinBox*       brightnessSpinBox  = nullptr;
     QCheckBox*      predictVBlankCheck = nullptr;
     QCheckBox*      kernelStrobeCheck  = nullptr;
+    QCheckBox*      motionCheckCheck   = nullptr;   // server-side motion measurement opt-in
     QCheckBox*      ledCheckBoxes[32]  = {};
     QPushButton*    startButton        = nullptr;
 
@@ -129,6 +140,7 @@ private:
     // ── Results page ─────────────────────────────────────────────────────────
     QTableWidget*       timingTable     = nullptr;
     QLabel*             summaryLabel    = nullptr;
+    QLabel*             motionVerdictLabel = nullptr;   // PASS / FAIL banner
     QPushButton*        exportCsvButton = nullptr;
     QPushButton*        saveAllButton   = nullptr;
     class TimingChart*  timingChart     = nullptr;
@@ -139,6 +151,17 @@ private:
     QMap<QString, ZoomImageWidget*>       frameViewers;
     QMap<QString, sanuwave::RawImageInfo> frameInfos;
     int                                   pendingPreviews = 0;
+
+    // Per-role motion data accumulated from frame_transfer headers as
+    // illum frames arrive. Folded into VBlankFrameTiming rows when
+    // populateTimingTable is called from onVBlankComplete.
+    QMap<QString, UVBFFrameInfo::Motion> frameMotions;
+
+    // Whether the operator enabled motion check for this capture. Set
+    // when sending the command; consumed by populateMotionVerdict to
+    // distinguish "user did not ask" (hide banner) from "user asked but
+    // server failed to measure" (show 'not available').
+    bool motionCheckRequested = false;
 
     // Stored for CSV export after table is populated
     QVector<VBlankFrameTiming> capturedFrames;

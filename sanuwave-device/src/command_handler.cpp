@@ -11,6 +11,10 @@
 #include "vd6283tx_wrapper.h"
 #include <chrono>
 #include <atomic>
+#include <algorithm>
+#include <cmath>
+#include <vector>
+#include <iomanip>
 #include <unistd.h>
 #include <opencv2/opencv.hpp>
 #include <sstream>
@@ -69,6 +73,228 @@ static std::string readSysfs(const std::string& path)
 }
 #endif
 // ──────────────────────────────────────────────────────────────────────────
+
+// ===========================================================================
+// UVBF burst motion measurement
+//
+// Phase correlation between the illuminated frames of a UVBF burst to
+// detect device drift during the capture. Operates on a centered ROI of
+// the G1 (green-1) Bayer channel — single-channel, no demosaic needed,
+// and the 2-pixel-period Bayer aliasing is sidestepped by taking only
+// every other pixel in both axes from the G1 position.
+//
+// N-aware. For each illum frame at 1-based illum-sequence index k:
+//   - k == 1: no measurement (no prior frame to correlate against)
+//   - k >= 2: two measurements
+//       * prev   = illum_{k-1} -> illum_k  (rolling reference, jitter)
+//       * anchor = illum_1     -> illum_k  (fixed reference, cumulative drift)
+// For k == 2 these are the same pair; the schema reports them uniformly.
+//
+// All work happens AFTER the camera burst is complete (post-disarmLeds).
+// The motion computation has zero impact on the 400 ms LED-flash-timeout
+// budget; it adds only to the transfer-start latency.
+//
+// The two confidence values let the client decide which measurement to
+// trust if one is filtered out by its confidence floor (e.g. anchor over
+// a long burst may drift enough to lose confidence while prev stays good).
+// ===========================================================================
+namespace {
+
+constexpr int UVBF_MOTION_ROI = 512;   // side of centered ROI (G1-sampled)
+
+struct UvbfPairResult
+{
+    bool   valid       = false;
+    double trans_px    = 0.0;
+    double confidence  = 0.0;
+};
+
+struct UvbfFrameMotion
+{
+    UvbfPairResult prev;     // illum_{k-1} -> illum_k
+    UvbfPairResult anchor;   // illum_1     -> illum_k
+};
+
+// Extract a centered ROI from the G1 Bayer channel. For BGGR the G1
+// position is (row even, col odd):
+//   B G B G ...
+//   G R G R ...
+// Taking every other pixel pair from G1 gives a single-channel image
+// with no Bayer aliasing.
+//
+// Returned mat is CV_32F single-channel, side x side, normalized to [0,1].
+// Empty mat on failure.
+cv::Mat extractUvbfMotionRoi(const cv::Mat& bayerImage)
+{
+    if (bayerImage.empty())
+        return {};
+    if (bayerImage.type() != CV_16UC1 && bayerImage.type() != CV_8UC1)
+    {
+        LOG_WARNING << "UVBF motion: unexpected Bayer mat type "
+                    << bayerImage.type() << ", skipping" << std::endl;
+        return {};
+    }
+
+    const int g1W = bayerImage.cols / 2;
+    const int g1H = bayerImage.rows / 2;
+    const int side = std::min({UVBF_MOTION_ROI, g1W, g1H});
+    if (side <= 0)
+        return {};
+
+    const int x0_g1 = (g1W - side) / 2;
+    const int y0_g1 = (g1H - side) / 2;
+    const int x0_orig = x0_g1 * 2 + 1;   // +1 for BGGR G1 column offset
+    const int y0_orig = y0_g1 * 2;
+
+    cv::Mat g1(side, side, bayerImage.type());
+    if (bayerImage.type() == CV_16UC1)
+    {
+        for (int y = 0; y < side; ++y)
+        {
+            const uint16_t* src = bayerImage.ptr<uint16_t>(y0_orig + y * 2)
+                                  + x0_orig;
+            uint16_t* dst = g1.ptr<uint16_t>(y);
+            for (int x = 0; x < side; ++x)
+                dst[x] = src[x * 2];
+        }
+    }
+    else // CV_8UC1
+    {
+        for (int y = 0; y < side; ++y)
+        {
+            const uint8_t* src = bayerImage.ptr<uint8_t>(y0_orig + y * 2)
+                                 + x0_orig;
+            uint8_t* dst = g1.ptr<uint8_t>(y);
+            for (int x = 0; x < side; ++x)
+                dst[x] = src[x * 2];
+        }
+    }
+
+    cv::Mat gray32;
+    const double scale = (bayerImage.type() == CV_16UC1) ? (1.0 / 65535.0)
+                                                          : (1.0 / 255.0);
+    g1.convertTo(gray32, CV_32F, scale);
+    return gray32;
+}
+
+// Run phase correlation between two prepared ROIs.
+UvbfPairResult uvbfPhaseCorr(const cv::Mat& reference,
+                              const cv::Mat& current,
+                              const cv::Mat& hannWindow)
+{
+    UvbfPairResult out;
+    if (reference.empty() || current.empty() || hannWindow.empty())
+        return out;
+    if (reference.size() != current.size() ||
+        reference.size() != hannWindow.size())
+        return out;
+
+    double response = 0.0;
+    cv::Point2d shift = cv::phaseCorrelate(reference, current,
+                                            hannWindow, &response);
+    out.valid      = true;
+    out.trans_px   = std::hypot(shift.x, shift.y);
+    out.confidence = response;
+    return out;
+}
+
+// N-aware motion tracker for a UVBF burst.
+//
+// Usage:
+//   UvbfBurstMotion m;
+//   m.addFrame(illum1.image);        // 1-based index assigned in order
+//   m.addFrame(illum2.image);
+//   ... up to N
+//   auto r2 = m.getMotion(2);        // {prev, anchor} for illum2
+//   auto r3 = m.getMotion(3);        // {prev, anchor} for illum3
+//
+// getMotion(k) returns default (valid=false) for k==1 or k out of range.
+//
+// Failure semantics. If a frame's ROI extraction fails:
+//   - That frame's own results are invalid.
+//   - The anchor reference is unaffected (set by illum_1).
+//   - The prev reference is released, so the NEXT frame's prev result is
+//     invalid. The next frame's anchor result is still valid if the
+//     anchor survived.
+//   - makeHeader requires both prev and anchor to be valid to emit the
+//     motion sub-object, so partial-validity frames are reported as "no
+//     measurement." Client surfaces that as "Motion check: not available".
+class UvbfBurstMotion
+{
+public:
+    void addFrame(const cv::Mat& bayerImage)
+    {
+        cv::Mat roi = extractUvbfMotionRoi(bayerImage);
+        ++frameCount_;
+
+        if (roi.empty())
+        {
+            // Record an empty slot so 1-based indexing stays aligned.
+            // Invalidate prevRoi_ so the next frame's prev measurement is
+            // correctly reported as invalid. The anchor is unaffected.
+            frameResults_.emplace_back();
+            prevRoi_.release();
+            return;
+        }
+
+        // Lazy init: first valid ROI sets the Hann window and the anchor.
+        if (anchorRoi_.empty())
+        {
+            cv::createHanningWindow(hannWindow_, roi.size(), CV_32F);
+            anchorRoi_ = roi.clone();
+            prevRoi_   = roi.clone();
+            frameResults_.emplace_back();   // illum_1: no measurement
+            return;
+        }
+
+        UvbfFrameMotion fm;
+        fm.prev   = uvbfPhaseCorr(prevRoi_,   roi, hannWindow_);
+        fm.anchor = uvbfPhaseCorr(anchorRoi_, roi, hannWindow_);
+        frameResults_.push_back(fm);
+
+        // Roll the prev reference forward for the next frame.
+        prevRoi_ = roi.clone();
+    }
+
+    UvbfFrameMotion getMotion(int illumIndex) const
+    {
+        if (illumIndex < 2 || illumIndex > static_cast<int>(frameResults_.size()))
+            return {};
+        return frameResults_[illumIndex - 1];
+    }
+
+    int frameCount() const { return frameCount_; }
+
+    void logSummary() const
+    {
+        if (frameResults_.empty())
+        {
+            LOG_INFO << "UVBF motion: no frames" << std::endl;
+            return;
+        }
+        for (size_t i = 1; i < frameResults_.size(); ++i)
+        {
+            const auto& fm = frameResults_[i];
+            const int k = static_cast<int>(i) + 1;
+            LOG_INFO << "UVBF motion: illum_" << k
+                     << " prev "   << fm.prev.trans_px
+                     << " (conf "  << fm.prev.confidence  << "), "
+                     << "anchor "  << fm.anchor.trans_px
+                     << " (conf "  << fm.anchor.confidence << ")"
+                     << std::endl;
+        }
+    }
+
+private:
+    cv::Mat hannWindow_;
+    cv::Mat anchorRoi_;
+    cv::Mat prevRoi_;
+    int     frameCount_ = 0;
+    std::vector<UvbfFrameMotion> frameResults_;
+};
+
+} // anonymous namespace
+
 
 CommandHandler::CommandHandler(CameraBase *rgbCamera, ThermalCamera *thermalCamera,
                                CameraBase *arducamCamera, VL53L4CDWrapper *distanceSensor,
@@ -3132,6 +3358,7 @@ std::string CommandHandler::handleUVBFVBlankCapture(
     int         height     = p.getInt   (sanuwave::protocol::Param::HEIGHT,           1232);
     bool        predictVBlank = p.getBool("predict_vblank", false);
     bool        kernelStrobe  = p.getBool("kernel_strobe", false);
+    bool        motionCheck   = p.getBool(sanuwave::protocol::Param::UVBF_MOTION_CHECK, false);
 
  
     CameraBase* targetCamera = nullptr;
@@ -3306,7 +3533,7 @@ std::string CommandHandler::handleUVBFVBlankCapture(
                                width, height, flashTimeout_ms,
                                framePeriod_us, predictVBlank,
                                kernelStrobe, strobeSysfsPath,
-                               frameSequence, maxFrames]()
+                               frameSequence, maxFrames, motionCheck]()
     {
         const std::string bayerPattern = "BGGR";
         const int         blackLevel   = 4096;
@@ -3514,6 +3741,39 @@ std::string CommandHandler::handleUVBFVBlankCapture(
             return;
         }
 
+        // ── Inter-frame motion measurement on illuminated frames ──────────────
+        // Runs AFTER disarmLeds() — zero impact on the 400 ms LED-flash-
+        // timeout budget. Cost is ~3 ms per phase-correlation pair on Pi 5;
+        // even at the 9-illum maximum the total is well under 30 ms,
+        // negligible against the multi-second wire transfer that follows.
+        //
+        // The N-aware UvbfBurstMotion tracker handles any illum count.
+        // We feed it frames in burst order, filtered by fr.ledsOn (true ==
+        // illuminated), and record each role's 1-based illum-sequence index
+        // so the send loop below can pull motion results per frame.
+        //
+        // Skipped entirely when motionCheck is false (the protocol opt-in).
+        UvbfBurstMotion motionTracker;
+        std::map<std::string, int> roleToIllumIndex;
+        if (motionCheck)
+        {
+            int kIllum = 0;
+            for (const VBlankFrameResult& fr : result.frames)
+            {
+                if (!fr.success || fr.image.empty()) continue;
+                if (!fr.ledsOn) continue;
+                ++kIllum;
+                roleToIllumIndex[fr.role] = kIllum;
+                motionTracker.addFrame(fr.image);
+            }
+            motionTracker.logSummary();
+        }
+        else
+        {
+            LOG_INFO << "UVBF VBlank motion: check disabled by client (skipping)"
+                     << std::endl;
+        }
+
         // Build roles list from the frames that will be transferred
         std::ostringstream rolesJson;
         rolesJson << "[";
@@ -3587,13 +3847,52 @@ std::string CommandHandler::handleUVBFVBlankCapture(
                 << R"(,"sensor_ts_ns":")"     << fr.sensorTimestamp_ns    << R"(")"
                 << R"(,"callback_ts_ns":")"   << fr.callbackTimestamp_ns  << R"(")"
                 << R"(,"callback_delta_us":)" << callbackDelta_us
-                << R"(,"frame_dur_us":)"      << fr.frameDuration_us
-                << "}";
- 
+                << R"(,"frame_dur_us":)"      << fr.frameDuration_us;
+
+            // Optional motion sub-object. Only emitted when motionCheck was
+            // requested AND this frame is an illuminated frame at illum-
+            // sequence index k >= 2 AND both prev and anchor measurements
+            // are valid and finite. Requiring both pairs to be valid keeps
+            // the schema simple for the client (one check covers both
+            // measurements); partial validity falls back to "no measurement"
+            // for that frame.
+            if (motionCheck && fr.ledsOn)
+            {
+                auto it = roleToIllumIndex.find(fr.role);
+                if (it != roleToIllumIndex.end() && it->second >= 2)
+                {
+                    const UvbfFrameMotion fm = motionTracker.getMotion(it->second);
+                    namespace UM = sanuwave::protocol::UvbfMotionField;
+                    const bool emit = fm.prev.valid && fm.anchor.valid &&
+                                      std::isfinite(fm.prev.trans_px)    &&
+                                      std::isfinite(fm.prev.confidence)  &&
+                                      std::isfinite(fm.anchor.trans_px)  &&
+                                      std::isfinite(fm.anchor.confidence);
+                    if (emit)
+                    {
+                        frameHeader
+                            << R"(,")" << UM::OBJECT << R"(":{)"
+                            << R"(")" << UM::VALID             << R"(":true,)"
+                            << R"(")" << UM::PREV_TRANS_PX     << R"(":)"
+                                      << std::fixed << std::setprecision(4)
+                                      << fm.prev.trans_px     << ","
+                            << R"(")" << UM::PREV_CONFIDENCE   << R"(":)"
+                                      << fm.prev.confidence   << ","
+                            << R"(")" << UM::ANCHOR_TRANS_PX   << R"(":)"
+                                      << fm.anchor.trans_px   << ","
+                            << R"(")" << UM::ANCHOR_CONFIDENCE << R"(":)"
+                                      << fm.anchor.confidence
+                            << "}";
+                    }
+                }
+            }
+
+            frameHeader << "}";
+
             uvbfNotify(
                 R"({"type":")" + std::string(protocol::ResponseType::UVBF_FRAME_CAPTURED)
                 + R"(","frame_role":")" + fr.role + R"("})");
- 
+
             if (sendDngCallback)
                 sendDngCallback(frameHeader.str(), payload.data(), payload.size());
         }

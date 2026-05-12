@@ -249,6 +249,14 @@ namespace Param {
     constexpr const char* MOTION_ROI_SIZE  = "motion_roi_size";    // pixels, default 512
     constexpr const char* MOTION_REFERENCE = "motion_reference";   // "previous" | "anchor"
 
+    // UVBF burst motion check (used by UVBF_VBLANK_CAPTURE).
+    // Server-side phase correlation between the illuminated frames of a
+    // VBlank-timing burst. When false (default), the server skips the
+    // computation entirely - no CPU cost, no log line, no motion sub-object
+    // on the wire. Client decides PASS/FAIL/etc. from the returned drift
+    // values.
+    constexpr const char* UVBF_MOTION_CHECK = "uvbf_motion_check";  // bool, default false
+
     // Sensor temperature
     constexpr const char* TEMPERATURE_CELSIUS  = "celsius";
     constexpr const char* TEMPERATURE_RELIABLE = "reliable";
@@ -269,6 +277,13 @@ namespace Param {
 // ============================================================================
 // FRAME ROLES  (used in FRAME_TRANSFER payloads)
 // ============================================================================
+//
+// Wire-format strings for the FRAME_ROLE field. The illuminated-frame role
+// pattern is "illuminated_N" where N is 1-based; constants are provided up
+// through 9 so a UVBF burst can carry up to 9 illuminated frames without
+// stringifying the index on the fly. The LED flash timeout (~400 ms) caps
+// the total burst length in practice. The standard UVBF capture uses
+// ILLUMINATED_1..3; the VBlank timing experiment can produce variable N.
 namespace FrameRole {
     constexpr const char* BACKGROUND    = "background";
     constexpr const char* UV            = "uv";          // legacy — keep for compatibility
@@ -278,6 +293,12 @@ namespace FrameRole {
     constexpr const char* ILLUMINATED_1 = "illuminated_1";
     constexpr const char* ILLUMINATED_2 = "illuminated_2";
     constexpr const char* ILLUMINATED_3 = "illuminated_3";
+    constexpr const char* ILLUMINATED_4 = "illuminated_4";
+    constexpr const char* ILLUMINATED_5 = "illuminated_5";
+    constexpr const char* ILLUMINATED_6 = "illuminated_6";
+    constexpr const char* ILLUMINATED_7 = "illuminated_7";
+    constexpr const char* ILLUMINATED_8 = "illuminated_8";
+    constexpr const char* ILLUMINATED_9 = "illuminated_9";
     constexpr const char* DARK_2        = "dark_2";
 }
 // ============================================================================
@@ -340,6 +361,37 @@ namespace MotionField {
 namespace MotionReference {
     constexpr const char* PREVIOUS = "previous";  // measure against previous frame's ROI
     constexpr const char* ANCHOR   = "anchor";    // measure against first-frame ROI of stream
+}
+
+// ============================================================================
+// UVBF BURST MOTION FIELDS  (keys in the per-frame UVBF frame_transfer
+// motion sub-object — distinct from MotionField because the schema reports
+// TWO pair measurements per frame: rolling "previous" and fixed "anchor".)
+// ============================================================================
+//
+// Wire shape inside an illuminated frame's frame_transfer header (only for
+// frames with illum-sequence index k >= 2):
+//   "motion": {
+//     "valid": true,
+//     "prev_trans_px": 1.42,    // shift since the previous illum frame
+//     "prev_confidence": 0.31,
+//     "anchor_trans_px": 2.10,  // cumulative shift since illum1 (the anchor)
+//     "anchor_confidence": 0.18
+//   }
+//
+// Dark frames and the first illuminated frame do not carry a motion
+// sub-object. For the second illuminated frame the prev_* and anchor_*
+// pairs are identical (illum1 IS the previous frame); the schema is
+// reported uniformly for client simplicity.
+//
+// Thresholding for capture verdict is the client's responsibility.
+namespace UvbfMotionField {
+    constexpr const char* OBJECT            = "motion";
+    constexpr const char* VALID             = "valid";
+    constexpr const char* PREV_TRANS_PX     = "prev_trans_px";
+    constexpr const char* PREV_CONFIDENCE   = "prev_confidence";
+    constexpr const char* ANCHOR_TRANS_PX   = "anchor_trans_px";
+    constexpr const char* ANCHOR_CONFIDENCE = "anchor_confidence";
 }
 
 // ============================================================================
