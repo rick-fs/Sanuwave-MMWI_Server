@@ -46,10 +46,10 @@ int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
     initializeSensorCalibration(); 
-    app.setApplicationName("Sanuwave Medical Imaging");
+    app.setApplicationName("SanuwaveClient");
     app.setOrganizationName("Sanuwave");
-    app.setApplicationVersion("1.0.0");
-    
+    app.setApplicationVersion(VERSION_STRING);
+    app.setApplicationDisplayName("Sanuwave Medical Imaging");    
     // Get platform-appropriate log directory
     QString logPath = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     QDir logDir(logPath);

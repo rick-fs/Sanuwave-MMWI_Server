@@ -50,6 +50,16 @@ namespace ImuParam     = sanuwave::protocol::ImuParam;
 namespace ImuField     = sanuwave::protocol::ImuField;
 namespace ImuEventKind = sanuwave::protocol::ImuEventKind;
 
+
+namespace {
+    // Bump this whenever you make changes that could invalidate saved
+    // window state (added/removed dock widgets, renamed objectNames,
+    // major layout changes). Existing users get clean defaults on next launch.
+    constexpr int kWindowStateVersion = 2;
+}
+
+
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       serverConnection(new ServerConnection(this)),
@@ -5105,6 +5115,7 @@ void MainWindow::updateimx219ExposureHint()
 
 void MainWindow::saveWindowGeometry()
 {
+    settings->setValue("window/stateVersion", kWindowStateVersion);
     settings->setValue("window/geometry", saveGeometry());
     settings->setValue("window/state", saveState());
 
@@ -5117,71 +5128,134 @@ void MainWindow::saveWindowGeometry()
 
 void MainWindow::restoreWindowGeometry()
 {
-    if (settings->contains("window/geometry"))
+    // Version check — drop state from older builds rather than risk
+    // restoring something the current binary can't parse safely.
+    const int storedVersion = settings->value("window/stateVersion", 0).toInt();
+    if (storedVersion != kWindowStateVersion)
     {
-        restoreGeometry(settings->value("window/geometry").toByteArray());
-        restoreState(settings->value("window/state").toByteArray());
-
-        // On Ubuntu/X11, the window manager takes time to apply decorations.
-        // Use a real delay so frameGeometry() is accurate.
-        QTimer::singleShot(150, this, [this]()
-                           {
-            QScreen *screen = QGuiApplication::screenAt(geometry().center());
-            if (!screen)
-                screen = QGuiApplication::primaryScreen();
-            if (!screen)
-                return;
-
-            QRect available = screen->availableGeometry();
-            QRect frame = frameGeometry();
-            int titleBarHeight = frame.height() - height();
-
-            LOG_INFO << "Geometry check: available=" << available.width() << "x" << available.height()
-                     << " frame=" << frame.width() << "x" << frame.height()
-                     << " titleBar=" << titleBarHeight << std::endl;
-
-            // Clamp content size so frame fits in available area
-            int maxW = available.width();
-            int maxH = available.height() - titleBarHeight;
-            bool resized = false;
-
-            if (width() > maxW || height() > maxH)
-            {
-                resize(qMin(width(), maxW), qMin(height(), maxH));
-                resized = true;
-            }
-
-            // Force top-left to be within available area, accounting for title bar
-            int targetX = x();
-            int targetY = y();
-
-            // Ensure title bar is visible (frame top >= available top)
-            if (frame.top() < available.top())
-                targetY = available.top() + titleBarHeight;
-
-            // Ensure bottom doesn't overflow
-            if (targetY + height() > available.bottom())
-                targetY = available.bottom() - height();
-
-            // Ensure left/right edges
-            if (frame.left() < available.left())
-                targetX = available.left();
-            if (targetX + width() > available.right())
-                targetX = available.right() - width();
-
-            if (targetX != x() || targetY != y())
-            {
-                move(targetX, targetY);
-                LOG_INFO << "Window moved to (" << targetX << "," << targetY << ")" << std::endl;
-            }
-
-            if (resized)
-                LOG_INFO << "Window resized to " << width() << "x" << height() << std::endl; });
+        LOG_INFO << "Window state version mismatch (stored=" << storedVersion
+                 << ", current=" << kWindowStateVersion
+                 << "); discarding saved geometry" << std::endl;
+        settings->remove("window/geometry");
+        settings->remove("window/state");
+        return;
     }
-    else
+
+    if (!settings->contains("window/geometry"))
+        return;
+
+    const QByteArray geom = settings->value("window/geometry").toByteArray();
+    const QByteArray state = settings->value("window/state").toByteArray();
+
+    // Sanity check before handing bytes to Qt. Empty arrays are fine
+    // (we just skip); absurdly small or large ones get rejected outright.
+    auto looksReasonable = [](const QByteArray& ba) -> bool {
+        if (ba.isEmpty()) return false;
+        // QByteArray for geometry is typically 50-200 bytes; for state a
+        // few KB. Anything multi-megabyte is corruption.
+        if (ba.size() > 1024 * 1024) return false;
+        return true;
+    };
+
+    bool geometryRestored = false;
+    if (looksReasonable(geom))
     {
-        resize(1500, 950);
+        geometryRestored = restoreGeometry(geom);
+        if (!geometryRestored)
+        {
+            LOG_WARNING << "restoreGeometry() rejected saved bytes; clearing" << std::endl;
+            settings->remove("window/geometry");
+        }
     }
+
+    if (looksReasonable(state))
+    {
+        if (!restoreState(state))
+        {
+            LOG_WARNING << "restoreState() rejected saved bytes; clearing" << std::endl;
+            settings->remove("window/state");
+        }
+    }
+
+    if (!geometryRestored)
+        return;
+
+    // Existing deferred screen-clamp logic — unchanged behavior.
+    QTimer::singleShot(150, this, [this]()
+                       {
+        QScreen *screen = QGuiApplication::screenAt(geometry().center());
+        if (!screen)
+            screen = QGuiApplication::primaryScreen();
+        if (!screen)
+            return;
+
+        QRect available = screen->availableGeometry();
+        QRect frame = frameGeometry();
+        int titleBarHeight = frame.height() - height();
+
+        LOG_INFO << "Geometry check: available=" << available.width() << "x" << available.height()
+                 << " frame=" << frame.width() << "x" << frame.height()
+                 << " titleBar=" << titleBarHeight << std::endl;
+
+        // Clamp content size so frame fits in available area
+        int maxW = available.width();
+        int maxH = available.height() - titleBarHeight;
+        bool resized = false;
+
+        if (width() > maxW || height() > maxH)
+        {
+            resize(qMin(width(), maxW), qMin(height(), maxH));
+            resized = true;
+        }
+
+        // Force top-left to be within available area, accounting for title bar
+        int targetX = x();
+        int targetY = y();
+
+        if (frame.top() < available.top())
+            targetY = available.top() + titleBarHeight;
+
+        if (targetY + height() > available.bottom())
+            targetY = available.bottom() - height();
+
+        if (frame.left() < available.left())
+            targetX = available.left();
+        if (targetX + width() > available.right())
+            targetX = available.right() - width();
+
+        // Final safety: if the resulting rect still doesn't intersect ANY
+        // screen, fall back to centered defaults. Handles the multi-monitor-
+        // disconnect case where the saved geometry was on a monitor that's
+        // gone entirely.
+        QRect finalFrame(targetX, targetY, width(), height());
+        bool onAnyScreen = false;
+        for (QScreen* s : QGuiApplication::screens())
+        {
+            if (s->availableGeometry().intersects(finalFrame))
+            {
+                onAnyScreen = true;
+                break;
+            }
+        }
+        if (!onAnyScreen)
+        {
+            LOG_WARNING << "Restored geometry is off-screen on all displays; "
+                     << "resetting to centered default" << std::endl;
+            resize(1280, 800);
+            QRect primary = QGuiApplication::primaryScreen()->availableGeometry();
+            move(primary.center().x() - 640, primary.center().y() - 400);
+            return;
+        }
+
+        if (targetX != x() || targetY != y())
+        {
+            move(targetX, targetY);
+            LOG_INFO << "Window moved to (" << targetX << "," << targetY << ")" << std::endl;
+        }
+
+        if (resized)
+            LOG_INFO << "Window resized to " << width() << "x" << height() << std::endl;
+    });
 }
 
 void MainWindow::onUVBFVBlankTriggered()
