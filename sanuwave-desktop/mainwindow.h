@@ -96,7 +96,7 @@ private slots:
     void onALSInit();
     void onALSShutdown();
     void onALSRead();
-    void onALSGainChanged(double value);
+    void onALSGainChanged(int index);
     void onALSExposureChanged(int value);
     void onStrobeVBlankToggled(bool enabled);
     

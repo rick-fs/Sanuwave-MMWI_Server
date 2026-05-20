@@ -12,7 +12,7 @@ namespace sanuwave {
 // -----------------------------------------------------------------------------
 // Diagnostic flag — set to 0 once the all-zero-reads root cause is found.
 // -----------------------------------------------------------------------------
-#define VD6283_DIAG 1
+#define VD6283_DIAG 0
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -64,8 +64,8 @@ static void diagDumpConfig(uint8_t i2cAddr)
         { 0x30, "DC_CLAMP_EN       " },   // expect 0x1F
         { 0x3D, "OSC10M            " },   // expect 0x01
         { 0x3E, "OSC10M_TRIM_M     " },   // expect 0x00 (DEFAULT_HF_TRIM >> 8 = 0)
-        { 0x3F, "OSC10M_TRIM_L     " },   // expect 0x80
-        { 0x40, "OSC50K_TRIM       " },   // expect 0x08
+        { 0x3F, "OSC10M_TRIM_L     " },   // expect 0xE3
+        { 0x40, "OSC50K_TRIM       " },   // expect 0x07
         { 0x5A, "OTP_STATUS        " },   // expect 0x0A (bits 1 & 3 set)
         { 0x6B, "SEL_PD_CH1        " },   // expect 0x07
         { 0x6C, "SEL_PD_CH2        " },   // expect 0x07

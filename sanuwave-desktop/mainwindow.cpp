@@ -2339,13 +2339,25 @@ void MainWindow::setupUI()
     QGridLayout *alsConfigLayout = new QGridLayout(alsConfig);
     alsConfigLayout->addWidget(new QLabel("Gain:"), 0, 0);
     alsGainCombo = new QComboBox();
-    alsGainCombo->addItem("1x", 1.0);
-    alsGainCombo->addItem("2x", 2.0);
-    alsGainCombo->addItem("4x", 4.0);
-    alsGainCombo->addItem("8x", 8.0);
-    alsGainCombo->addItem("16x", 16.0);
-    alsGainCombo->addItem("32x", 32.0);
-    alsGainCombo->addItem("64x", 64.0);
+    // Items carry the VD6283TX::Gain enum code (0x01–0x0F) as userData.
+    // Listed low gain → high gain for user clarity; the enum codes themselves
+    // run inverse (lower code = higher gain). See VD6283TX::Gain.
+    alsGainCombo->addItem("0.71x", sanuwave::protocol::Param::AlsGain::X0_71);
+    alsGainCombo->addItem("0.83x", sanuwave::protocol::Param::AlsGain::X0_83);
+    alsGainCombo->addItem("1x",    sanuwave::protocol::Param::AlsGain::X1);
+    alsGainCombo->addItem("1.25x", sanuwave::protocol::Param::AlsGain::X1_25);
+    alsGainCombo->addItem("1.67x", sanuwave::protocol::Param::AlsGain::X1_67);
+    alsGainCombo->addItem("2.5x",  sanuwave::protocol::Param::AlsGain::X2_5);
+    alsGainCombo->addItem("3.33x", sanuwave::protocol::Param::AlsGain::X3_33);
+    alsGainCombo->addItem("5x",    sanuwave::protocol::Param::AlsGain::X5);
+    alsGainCombo->addItem("7.1x",  sanuwave::protocol::Param::AlsGain::X7_1);
+    alsGainCombo->addItem("10x",   sanuwave::protocol::Param::AlsGain::X10);
+    alsGainCombo->addItem("16x",   sanuwave::protocol::Param::AlsGain::X16);
+    alsGainCombo->addItem("25x",   sanuwave::protocol::Param::AlsGain::X25);
+    alsGainCombo->addItem("33x",   sanuwave::protocol::Param::AlsGain::X33);
+    alsGainCombo->addItem("50x",   sanuwave::protocol::Param::AlsGain::X50);
+    alsGainCombo->addItem("66.6x", sanuwave::protocol::Param::AlsGain::X66_6);
+    alsGainCombo->setCurrentIndex(2);  // "1x"    // Default to 1x (third entry).
     alsGainCombo->setEnabled(false);
     connect(alsGainCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onALSGainChanged);
@@ -2822,6 +2834,30 @@ void MainWindow::onServerDisconnected()
         imuRateLabel->setText("0 samples/batch");
     if (imuEventLog) 
         imuEventLog->clear();
+
+    // ALS (VD6283TX)
+    alsInitialized = false;
+    if (alsInitButton)
+        alsInitButton->setEnabled(true);     // user may want to re-init after reconnect
+    if (alsReadButton)
+        alsReadButton->setEnabled(false);
+    if (alsShutdownButton)
+        alsShutdownButton->setEnabled(false);
+    if (alsGainCombo)
+        alsGainCombo->setEnabled(false);
+    if (alsExposureSpinBox)
+        alsExposureSpinBox->setEnabled(false);
+    if (alsStatusLabel)
+        alsStatusLabel->setText("Not initialized");
+    if (alsRedLabel)       alsRedLabel->setText("---");
+    if (alsGreenLabel)     alsGreenLabel->setText("---");
+    if (alsBlueLabel)      alsBlueLabel->setText("---");
+    if (alsClearLabel)     alsClearLabel->setText("---");
+    if (alsIRLabel)        alsIRLabel->setText("---");
+    if (alsVisibleLabel)   alsVisibleLabel->setText("---");
+    if (alsLuxLabel)       alsLuxLabel->setText("--- lx");
+    if (alsCCTLabel)       alsCCTLabel->setText("--- K");
+    if (alsTimestampLabel) alsTimestampLabel->setText("Last update: --");
 
     // LED controls
     ledInitialized = false;
@@ -5056,17 +5092,24 @@ void MainWindow::onALSRead()
     sendCommand(cmd);
 }
 
-void MainWindow::onALSGainChanged(double value)
+void MainWindow::onALSGainChanged(int /*index*/)
 {
-
     if (!alsInitialized)
         return;
 
+    // Combo's userData carries the VD6283TX::Gain enum code (0x01–0x0F).
+    // Send as an integer JSON value; the server interprets it as the same enum.
+    bool ok = false;
+    int gainCode = alsGainCombo->currentData().toInt(&ok);
+    if (!ok || gainCode < sanuwave::protocol::Param::AlsGain::MIN_CODE || gainCode > sanuwave::protocol::Param::AlsGain::MAX_CODE)
+    {
+        return;
+    }   
+
     QJsonObject cmd;
     cmd[Param::COMMAND] = Command::ALS_SET_GAIN;
-    cmd[Param::GAIN] = QString::number(value);
+    cmd[Param::GAIN] = gainCode;
     sendCommand(cmd);
-
 }
 
 void MainWindow::onALSExposureChanged(int value)

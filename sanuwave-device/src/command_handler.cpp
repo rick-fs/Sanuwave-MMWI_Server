@@ -1667,10 +1667,13 @@ std::string CommandHandler::handleALSSetGain(const std::map<std::string, std::st
 
     ParamExtractor p(params);
 
-    // Accept a numeric gain code (0x01–0x0F) matching VD6283TX::Gain enum values.
-    // Client sends "gain" as an integer gain code. Default to X1 (0x0D).
-    int gainCode = p.getInt(Param::GAIN, static_cast<int>(VD6283TX::Gain::X1));
-    gainCode = std::clamp(gainCode, 0x01, 0x0F);
+ 
+    // Client sends "gain" as a VD6283TX::Gain enum code (integer 0x01–0x0F).
+    // See VD6283TX.h enum class Gain. 0x0D = X1 (default), 0x01 = X66_6
+    // (max gain), 0x0F = X0_71 (min gain). The enum is inverse-ordered:
+    // lower code = higher gain. UI ordering is the client's responsibilit
+    int gainCode = p.getInt(Param::GAIN, static_cast<int>(Param::AlsGain::DEFAULT));
+    gainCode = std::clamp(gainCode, Param::AlsGain::MIN_CODE, Param::AlsGain::MAX_CODE);
 
     auto gain = static_cast<VD6283TX::Gain>(gainCode);
 

@@ -274,6 +274,43 @@ namespace Param {
     constexpr const char* PAYLOAD_SIZE  = "payload_size";
     constexpr const char* PIXEL_FORMAT  = "pixel_format";
     constexpr const char* SESSION_ID    = "session_id";
+
+    // =============================================================================
+    // VD6283TX (ALS) gain codes — wire values for the "als_set_gain" command.
+    //
+    // These mirror the VD6283TX::Gain enum in the server-side driver. The wire
+    // protocol sends them as integers in the "gain" field; the server reinterprets
+    // them directly as Gain enum values.
+    //
+    // Inverse-ordered by the chip: lower code = higher gain.
+    //   X66_6 (0x01) = maximum gain
+    //   X1    (0x0D) = unity (default)
+    //   X0_71 (0x0F) = minimum gain
+    //
+    // If you add or change values here, update VD6283TX::Gain in the server-side
+    // driver to match. The two MUST stay in sync.
+    // =============================================================================
+    namespace AlsGain {
+        static constexpr int X66_6 = 0x01;
+        static constexpr int X50   = 0x02;
+        static constexpr int X33   = 0x03;
+        static constexpr int X25   = 0x04;
+        static constexpr int X16   = 0x05;
+        static constexpr int X10   = 0x06;
+        static constexpr int X7_1  = 0x07;
+        static constexpr int X5    = 0x08;
+        static constexpr int X3_33 = 0x09;
+        static constexpr int X2_5  = 0x0A;
+        static constexpr int X1_67 = 0x0B;
+        static constexpr int X1_25 = 0x0C;
+        static constexpr int X1    = 0x0D;
+        static constexpr int X0_83 = 0x0E;
+        static constexpr int X0_71 = 0x0F;
+
+        static constexpr int MIN_CODE = 0x01;
+        static constexpr int MAX_CODE = 0x0F;
+        static constexpr int DEFAULT  = X1;
+    }
 }
 
 // ============================================================================
